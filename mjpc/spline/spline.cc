@@ -150,6 +150,55 @@ void TimeSpline::Sample(double time, absl::Span<double> values) const {
       }
       return;
     }
+    case SplineInterpolation::kBezierCurve: {
+      // Piecewise Uniform Cubic B-Spline을 구현합니다.
+      // 이 곡선은 제어점(노드)을 통과하지 않고 그 사이를 C2-연속으로 근사합니다.
+      // 세그먼트 [i, i+1]의 곡선을 그리기 위해 4개의 제어점
+      // P(i-1), P(i), P(i+1), P(i+2)가 필요합니다.
+      
+      int lower_idx = lower - times_.begin();
+      int upper_idx = upper - times_.begin();
+
+      // P(i) = lower_node, P(i+1) = upper_node
+      ConstNode p_i = lower_node;
+      ConstNode p_i_plus_1 = upper_node;
+      
+      // 경계 처리: P(i-1) 가져오기 (없으면 P(i) 반복)
+      ConstNode p_i_minus_1 = (lower_idx == 0) ? p_i : NodeAt(lower_idx - 1);
+      
+      // 경계 처리: P(i+2) 가져오기 (없으면 P(i+1) 반복)
+      ConstNode p_i_plus_2 = (upper_idx >= times_.size() - 1) ? p_i_plus_1 : NodeAt(upper_idx + 1);
+
+      // B-Spline 제어점(P)을 Bézier 제어점(B)으로 변환합니다.
+      // B0 = (1/6) * (P_i-1 + 4*P_i + P_i+1)
+      // B1 = (1/6) * (4*P_i + 2*P_i+1)
+      // B2 = (1/6) * (2*P_i + 4*P_i+1)
+      // B3 = (1/6) * (P_i + 4*P_i+1 + P_i+2)
+      
+      // 3차 베지어 곡선의 계수 (Bernstein polynomials)
+      double t_inv = 1.0 - t;
+      double c0 = t_inv * t_inv * t_inv;           // (1-t)^3
+      double c1 = 3.0 * t_inv * t_inv * t;      // 3(1-t)^2 * t
+      double c2 = 3.0 * t_inv * t * t;          // 3(1-t) * t^2
+      double c3 = t * t * t;                      // t^3
+
+      for (int i = 0; i < dim_; i++) {
+        double p_im1 = p_i_minus_1.values().at(i);
+        double p_i_val = p_i.values().at(i);
+        double p_ip1 = p_i_plus_1.values().at(i);
+        double p_ip2 = p_i_plus_2.values().at(i);
+
+        // B-spline -> Bézier 제어점 계산
+        double b0 = (p_im1 + 4.0 * p_i_val + p_ip1) / 6.0;
+        double b1 = (4.0 * p_i_val + 2.0 * p_ip1) / 6.0;
+        double b2 = (2.0 * p_i_val + 4.0 * p_ip1) / 6.0;
+        double b3 = (p_i_val + 4.0 * p_ip1 + p_ip2) / 6.0;
+
+        // 베지어 곡선 평가
+        values[i] = c0 * b0 + c1 * b1 + c2 * b2 + c3 * b3;
+      }
+      return;
+    }
     default:
       CHECK(false) << "Unknown interpolation: " << interpolation_;
   }

@@ -18,6 +18,28 @@
 add_custom_target(
   copy_model_resources ALL
   ## dm_control models
+
+
+  # ================ EC ============ #
+  # Fr3 for force control
+  # 1. panda.xml 복사 (Fr3 경로 생성)
+  COMMAND ${CMAKE_COMMAND} -E copy
+  ${menagerie_SOURCE_DIR}/franka_emika_panda/panda.xml
+  ${CMAKE_CURRENT_BINARY_DIR}/Fr3/panda.xml
+  
+  # 2. assets 복사 (Fr3 경로에 assets 폴더 생성)
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+  ${menagerie_SOURCE_DIR}/franka_emika_panda/assets
+  ${CMAKE_CURRENT_BINARY_DIR}/Fr3/assets
+  
+  # 3. panda_modified.xml 생성 (Fr3 경로)
+  #   -o (output) 옵션을 사용하여 패치 결과를 Fr3 폴더에 저장합니다.
+  COMMAND patch -o ${CMAKE_CURRENT_BINARY_DIR}/Fr3/panda_modified.xml
+  ${CMAKE_CURRENT_BINARY_DIR}/Fr3/panda.xml
+  <${CMAKE_CURRENT_SOURCE_DIR}/Fr3/fr3.xml.patch
+
+  # ================ EC ============ #
+
   # acrobot
   COMMAND ${CMAKE_COMMAND} -E copy
           ${dm_control_SOURCE_DIR}/dm_control/suite/acrobot.xml

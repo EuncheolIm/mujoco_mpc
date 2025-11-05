@@ -31,6 +31,7 @@ enum SplineInterpolation : int {
   kZeroSpline,
   kLinearSpline,
   kCubicSpline,
+  kBezierCurve,  // add EC
 };
 
 

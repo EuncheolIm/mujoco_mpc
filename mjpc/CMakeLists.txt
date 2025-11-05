@@ -84,6 +84,19 @@ add_library(
   tasks/swimmer/swimmer.h
   tasks/walker/walker.cc
   tasks/walker/walker.h
+
+  # ===== EC ===== #
+  tasks/Fr3/fr3.cc
+  tasks/Fr3/fr3.h
+
+  # MPPI
+  planners/MPPI/planner.cc
+  planners/MPPI/planner.h
+
+  planners/MPPI/policy.cc
+  planners/MPPI/policy.h
+  # ===== EC ===== #
+  
   planners/planner.cc
   planners/planner.h
   planners/policy.h

@@ -267,9 +267,6 @@ void SamplingPlanner::UpdateNominalPolicy(int horizon) {
       case spline::SplineInterpolation::kCubicSpline:
         extra_points = 4;
         break;
-      case spline::SplineInterpolation::kBezierCurve:
-        extra_points = 4;
-        break;
     }
 
     // temporal distance between spline points

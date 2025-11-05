@@ -150,8 +150,11 @@ void Agent::Initialize(const mjModel* model) {
   estimator_threads_ = estimator_enabled;
 
   // planner threads
+  // ===== add EC ===== //
+  int core_essential_thread = 1;
   planner_threads_ =
-      std::max(1, NumAvailableHardwareThreads() - 3 - 2 * estimator_threads_);
+      std::max(1, NumAvailableHardwareThreads() - 3 - 2 * estimator_threads_ - core_essential_thread);
+  // ================== //
 
   // differentiable planning model
   // by default gradient-based planners use a differentiable model

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mjpc/planners/sampling/planner.h"
+#include "mjpc/planners/MPPI/planner.h"
 
 #include <algorithm>
 #include <chrono>
@@ -23,7 +23,7 @@
 #include <mujoco/mujoco.h>
 #include "mjpc/array_safety.h"
 #include "mjpc/planners/planner.h"
-#include "mjpc/planners/sampling/policy.h"
+#include "mjpc/planners/MPPI/policy.h"
 #include "mjpc/spline/spline.h"
 #include "mjpc/states/state.h"
 #include "mjpc/task.h"
@@ -38,7 +38,7 @@ using mjpc::spline::SplineInterpolation;
 using mjpc::spline::TimeSpline;
 
 // initialize data and settings
-void SamplingPlanner::Initialize(mjModel* model, const Task& task) {
+void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
   // delete mjData instances since model might have changed.
   data_.clear();
   // allocate one mjData for nominal.
@@ -76,7 +76,7 @@ void SamplingPlanner::Initialize(mjModel* model, const Task& task) {
 }
 
 // allocate memory
-void SamplingPlanner::Allocate() {
+void MPPIPlanner::Allocate() {
   // initial state
   int num_state = model->nq + model->nv + model->na;
 
@@ -92,6 +92,10 @@ void SamplingPlanner::Allocate() {
 
   // noise
   noise.resize(kMaxTrajectory * (model->nu * kMaxTrajectoryHorizon));
+  
+  // ===== EC ===== //
+  weights.resize(kMaxTrajectory); // 'weights' 벡터의 크기를 최대 궤적 수만큼 할당
+  // ============== //
 
   // trajectory and parameters
   winner = -1;
@@ -104,7 +108,7 @@ void SamplingPlanner::Allocate() {
 }
 
 // reset memory to zeros
-void SamplingPlanner::Reset(int horizon,
+void MPPIPlanner::Reset(int horizon,
                             const double* initial_repeated_action) {
   // state
   std::fill(state.begin(), state.end(), 0.0);
@@ -147,12 +151,12 @@ void SamplingPlanner::Reset(int horizon,
 }
 
 // set state
-void SamplingPlanner::SetState(const State& state) {
+void MPPIPlanner::SetState(const State& state) {
   state.CopyTo(this->state.data(), this->mocap.data(), this->userdata.data(),
                &this->time);
 }
 
-int SamplingPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
+int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
                                               ThreadPool& pool) {
   // resample nominal policy to current time
   this->UpdateNominalPolicy(horizon);
@@ -168,53 +172,110 @@ int SamplingPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // start timer
   auto rollouts_start = std::chrono::steady_clock::now();
 
+  float mppi_lambda_ = 0.1f;
+
   // simulate noisy policies
   policy.plan.SetInterpolation(interpolation_);
   this->Rollouts(num_trajectory, horizon, pool);
 
-  // sort candidate policies and trajectories by score
-  trajectory_order.clear();
-  trajectory_order.reserve(num_trajectory);
-  for (int i = 0; i < num_trajectory; i++) {
-    trajectory_order.push_back(i);
+  // 최소 비용(Cost) 찾기
+  double min_return_cost = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < num_trajectory; ++i) {
+    min_return_cost = std::min(min_return_cost, trajectory[i].total_return);
   }
 
-  // sort so that the first ncandidates elements are the best candidates, and
-  // the rest are in an unspecified order
-  std::partial_sort(
-      trajectory_order.begin(), trajectory_order.begin() + ncandidates,
-      trajectory_order.end(), [trajectory = trajectory](int a, int b) {
-        return trajectory[a].total_return < trajectory[b].total_return;
-      });
+  double sum_weights = 0.0;
+  for (int i = 0; i < num_trajectory; ++i) {
+    double cost_diff = trajectory[i].total_return - min_return_cost;
+    double exponent = -(cost_diff) / mppi_lambda_;
+    weights[i] = std::exp(exponent);
+    sum_weights += weights[i];
+  }
+
+  for (int i = 0; i < num_trajectory; ++i) weights[i] /= sum_weights;    
+
+
+  for(int t=0; t < mju_min(horizon, (int)policy.plan.Size()); t++)
+  {
+    for(int k=0; k<model->nu; k++){
+      auto best_policy_node_it = policy.plan.begin() + t;
+      best_policy_node_it->values()[k] = 0.0;
+    }
+  }
+
+  { // <-- 잠금 시작
+    const std::unique_lock<std::shared_mutex> lock(mtx_);
+
+    // weights * control_node -> optimal u * ( tau sampling directly...)
+    for(int i=0; i < num_trajectory; i++)
+    { 
+      // policy.plan.Size() : node 개수
+      for(int t=0; t < mju_min(horizon, (int)policy.plan.Size()); t++)
+      {
+        auto best_policy_node_it = policy.plan.begin() + t;
+        auto candidate_node_it = candidate_policy[i].plan.begin() + t;
+        for(int k=0; k<model->nu; k++){
+          best_policy_node_it->values()[k] += weights[i] * candidate_node_it->values()[k];
+        }
+      }
+    }
+  }
+
+  candidate_policy[num_trajectory - 1].plan = policy.plan;
+  winner = num_trajectory - 1;
+
+
+
+  // // sort candidate policies and trajectories by score
+  // trajectory_order.clear();
+  // trajectory_order.reserve(num_trajectory);
+  // for (int i = 0; i < num_trajectory; i++) {
+  //   trajectory_order.push_back(i);
+  // }
+
+  // // sort so that the first ncandidates elements are the best candidates, and
+  // // the rest are in an unspecified order
+  // std::partial_sort(
+  //     trajectory_order.begin(), trajectory_order.begin() + ncandidates,
+  //     trajectory_order.end(), [trajectory = trajectory](int a, int b) {
+  //       return trajectory[a].total_return < trajectory[b].total_return;
+  //     });
 
   // stop timer
   rollouts_compute_time = GetDuration(rollouts_start);
 
-  return ncandidates;
+  return 0;
 }
 
 // optimize nominal policy using random sampling
-void SamplingPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
+void MPPIPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
+
+
+  {
+    const std::unique_lock<std::shared_mutex> lock(mtx_);
+    previous_policy = policy;
+  }
+
   OptimizePolicyCandidates(1, horizon, pool);
 
   // ----- update policy ----- //
   // start timer
   auto policy_update_start = std::chrono::steady_clock::now();
 
-  CopyCandidateToPolicy(0);
+  // CopyCandidateToPolicy(0);
 
   // improvement: compare nominal to winner
-  double best_return = trajectory[0].total_return;
-  improvement = mju_max(best_return - trajectory[winner].total_return, 0.0);
+  // double best_return = trajectory[num_trajectory_-1].total_return;
+  // improvement = mju_max(best_return - trajectory[winner].total_return, 0.0);
 
   // stop timer
   policy_update_compute_time = GetDuration(policy_update_start);
 }
 
 // compute trajectory using nominal policy
-void SamplingPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
+void MPPIPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
   // set policy
-  auto nominal_policy = [&cp = candidate_policy[0]](
+  auto nominal_policy = [&cp = candidate_policy[num_trajectory_-1]](
                             double* action, const double* state, double time) {
     cp.Action(action, state, time);
   };
@@ -226,7 +287,7 @@ void SamplingPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
 }
 
 // set action from policy
-void SamplingPlanner::ActionFromPolicy(double* action, const double* state,
+void MPPIPlanner::ActionFromPolicy(double* action, const double* state,
                                        double time, bool use_previous) {
   const std::shared_lock<std::shared_mutex> lock(mtx_);
   if (use_previous) {
@@ -235,18 +296,18 @@ void SamplingPlanner::ActionFromPolicy(double* action, const double* state,
     policy.Action(action, state, time);
   }
   
-  std::cout << "Applied Action (t=" << time << "): [";
-  for (int i = 0; i < model->nu; i++) {
-    std::cout << action[i];
-    if (i < model->nu - 1) {
-      std::cout << ", ";
-    }
-  }
-  std::cout << "]" << std::endl;
+  // std::cout << "Applied Action (t=" << time << "): [";
+  // for (int i = 0; i < model->nu; i++) {
+  //   std::cout << action[i];
+  //   if (i < model->nu - 1) {
+  //     std::cout << ", ";
+  //   }
+  // }
+  // std::cout << "]" << std::endl;
 }
 
 // update policy via resampling
-void SamplingPlanner::UpdateNominalPolicy(int horizon) {
+void MPPIPlanner::UpdateNominalPolicy(int horizon) {
   // dimensions
   int num_spline_points = candidate_policy[winner].num_spline_points;
 
@@ -257,6 +318,7 @@ void SamplingPlanner::UpdateNominalPolicy(int horizon) {
   if (sliding_plan_) {
     // extra points required outside of the horizon window
     int extra_points;
+
     switch (interpolation_) {
       case spline::SplineInterpolation::kZeroSpline:
         extra_points = 1;
@@ -335,7 +397,7 @@ void SamplingPlanner::UpdateNominalPolicy(int horizon) {
 }
 
 // add random noise to nominal policy
-void SamplingPlanner::AddNoiseToPolicy(double start_time, int i) {
+void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
   // start timer
   auto noise_start = std::chrono::steady_clock::now();
 
@@ -354,6 +416,7 @@ void SamplingPlanner::AddNoiseToPolicy(double start_time, int i) {
       double scale = 0.5 * (model->actuator_ctrlrange[2 * k + 1] -
                             model->actuator_ctrlrange[2 * k]);
       double noise = absl::Gaussian<double>(gen_, 0.0, scale * std);
+      // double noise = absl::Gaussian<double>(gen_, 0.0, std);
       node.values()[k] += noise;
     }
     Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
@@ -364,7 +427,7 @@ void SamplingPlanner::AddNoiseToPolicy(double start_time, int i) {
 }
 
 // compute candidate trajectories
-void SamplingPlanner::Rollouts(int num_trajectory, int horizon,
+void MPPIPlanner::Rollouts(int num_trajectory, int horizon,
                                ThreadPool& pool) {
   // reset noise compute time
   noise_compute_time = 0.0;
@@ -405,12 +468,12 @@ void SamplingPlanner::Rollouts(int num_trajectory, int horizon,
 }
 
 // return trajectory with best total return
-const Trajectory* SamplingPlanner::BestTrajectory() {
+const Trajectory* MPPIPlanner::BestTrajectory() {
   return winner >= 0 ? &trajectory[winner] : nullptr;
 }
 
 // visualize planner-specific traces
-void SamplingPlanner::Traces(mjvScene* scn) {
+void MPPIPlanner::Traces(mjvScene* scn) {
   // sample color
   float color[4];
   color[0] = 1.0;
@@ -455,11 +518,11 @@ void SamplingPlanner::Traces(mjvScene* scn) {
 }
 
 // planner-specific GUI elements
-void SamplingPlanner::GUI(mjUI& ui) {
+void MPPIPlanner::GUI(mjUI& ui) {
   mjuiDef defSampling[] = {
       {mjITEM_SLIDERINT, "Rollouts", 2, &num_trajectory_, "0 1"},
       {mjITEM_SELECT, "Spline", 2, &interpolation_,
-       "Zero\nLinear\nCubic"},
+       "Zero\nLinear\nCubic\nBeizer"},
       {mjITEM_SLIDERINT, "Spline Pts", 2, &policy.num_spline_points, "0 1"},
       {mjITEM_SLIDERNUM, "Noise Std", 2, noise_exploration, "0 1"},
       {mjITEM_SLIDERNUM, "Noise Std2", 2, noise_exploration+1, "0 1"},
@@ -470,19 +533,19 @@ void SamplingPlanner::GUI(mjUI& ui) {
   mju::sprintf_arr(defSampling[0].other, "%i %i", 1, kMaxTrajectory);
 
   // set spline point limits
-  mju::sprintf_arr(defSampling[2].other, "%i %i", MinSamplingSplinePoints,
-                   MaxSamplingSplinePoints);
+  mju::sprintf_arr(defSampling[2].other, "%i %i", MinSamplingSplinePoints1,
+                   MaxSamplingSplinePoints1);
 
   // set noise standard deviation limits
-  mju::sprintf_arr(defSampling[3].other, "%f %f", MinNoiseStdDev,
-                   MaxNoiseStdDev);
+  mju::sprintf_arr(defSampling[3].other, "%f %f", MinNoiseStdDev1,
+                   MaxNoiseStdDev1);
 
   // add sampling planner
   mjui_add(&ui, defSampling);
 }
 
 // planner-specific plots
-void SamplingPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
+void MPPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
                             int planner_shift, int timer_shift, int planning,
                             int* shift) {
   // ----- planner ----- //
@@ -532,18 +595,18 @@ void SamplingPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
   shift[1] += 3;
 }
 
-double SamplingPlanner::CandidateScore(int candidate) const {
+double MPPIPlanner::CandidateScore(int candidate) const {
   return trajectory[trajectory_order[candidate]].total_return;
 }
 
 // set action from candidate policy
-void SamplingPlanner::ActionFromCandidatePolicy(double* action, int candidate,
+void MPPIPlanner::ActionFromCandidatePolicy(double* action, int candidate,
                                                 const double* state,
                                                 double time) {
   candidate_policy[trajectory_order[candidate]].Action(action, state, time);
 }
 
-void SamplingPlanner::CopyCandidateToPolicy(int candidate) {
+void MPPIPlanner::CopyCandidateToPolicy(int candidate) {
   // set winner
   winner = trajectory_order[candidate];
 

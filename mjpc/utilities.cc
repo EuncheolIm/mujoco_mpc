@@ -787,7 +787,7 @@ int NumAvailableHardwareThreads(void) {
   for (int max_count = 128; true; max_count *= 2) {
     std::unique_ptr<cpu_set_t, void (*)(cpu_set_t*)> set(
         CPU_ALLOC(max_count), +[](cpu_set_t* set) { CPU_FREE(set); });
-    size_t setsize = CPU_ALLOC_SIZE(max_count);
+    size_t setsize = CPU_ALLOC_SIZE(max_count-1);
     int result = sched_getaffinity(getpid(), setsize, set.get());
     if (result == 0) {
       // success
