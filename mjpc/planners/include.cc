@@ -27,10 +27,12 @@
 #include "mjpc/planners/sampling/planner.h"
 
 #include "mjpc/planners/MPPI/planner.h"
+#include "mjpc/planners/MPOPI/planner.h"
 
 namespace mjpc {
 const char kPlannerNames[] =
     "MPPI\n"
+    "MPOPI\n"
     "Sampling\n"
     "Gradient\n"
     "iLQG\n"
@@ -45,6 +47,7 @@ std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
   std::vector<std::unique_ptr<mjpc::Planner>> planners;
 
   planners.emplace_back(new mjpc::MPPIPlanner);
+  planners.emplace_back(new mjpc::MPOPIPlanner);
   planners.emplace_back(new mjpc::SamplingPlanner);
   planners.emplace_back(new mjpc::GradientPlanner);
   planners.emplace_back(new mjpc::iLQGPlanner);

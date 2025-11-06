@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef MJPC_PLANNERS_MPPI_PLANNER_H_
-#define MJPC_PLANNERS_MPPI_PLANNER_H_
+#ifndef MJPC_PLANNERS_MPOPI_PLANNER_H_
+#define MJPC_PLANNERS_MPOPI_PLANNER_H_
 
 #include <mujoco/mujoco.h>
 
@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "mjpc/planners/planner.h"
-#include "mjpc/planners/MPPI/policy.h"
+#include "mjpc/planners/MPOPI/policy.h"
 #include "mjpc/spline/spline.h"
 #include "mjpc/states/state.h"
 #include "mjpc/task.h"
@@ -32,18 +32,18 @@
 namespace mjpc {
 
 // sampling planner limits
-inline constexpr int MinSamplingSplinePoints1 = 1;
-inline constexpr int MaxSamplingSplinePoints1 = 36;
-inline constexpr double MinNoiseStdDev1 = 0.0;
-inline constexpr double MaxNoiseStdDev1 = 10.0;
+inline constexpr int MinSamplingSplinePoints2 = 1;
+inline constexpr int MaxSamplingSplinePoints2 = 36;
+inline constexpr double MinNoiseStdDev2 = 0.0;
+inline constexpr double MaxNoiseStdDev2 = 10.0;
 
-class MPPIPlanner : public RankedPlanner {
+class MPOPIPlanner : public RankedPlanner {
  public:
   // constructor
-  MPPIPlanner() = default;
+  MPOPIPlanner() = default;
 
   // destructor
-  ~MPPIPlanner() override = default;
+  ~MPOPIPlanner() override = default;
 
   // ----- methods ----- //
 
@@ -122,9 +122,9 @@ class MPPIPlanner : public RankedPlanner {
   std::vector<double> userdata;
 
   // policy
-  MPPIPolicy policy;  // (Guarded by mtx_)
-  MPPIPolicy candidate_policy[kMaxTrajectory];
-  MPPIPolicy previous_policy;
+  MPOPIPolicy policy;  // (Guarded by mtx_)
+  MPOPIPolicy candidate_policy[kMaxTrajectory];
+  MPOPIPolicy previous_policy;
 
   // scratch
   mjpc::spline::TimeSpline plan_scratch;
@@ -165,9 +165,11 @@ mjpc::spline::SplineInterpolation interpolation_ =
   int num_trajectory_;
   mutable std::shared_mutex mtx_;
 
-  double F_des[3] = {0.0, 0.0, 0.0}; // Desired End effector force
+  // MPOPIPlanner 멤버에 추가
+  std::vector<double> sigma;  // 크기: horizon * model->nu
+  void UpdateCovarianceFromElite(int K, int horizon);
 };
 
 }  // namespace mjpc
 
-#endif  // MJPC_PLANNERS_MPPI_PLANNER_H_
+#endif  // MJPC_PLANNERS_MPOPI_PLANNER_H_

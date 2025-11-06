@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "mjpc/planners/MPPI/planner.h"
+#include "mjpc/planners/MPOPI/planner.h"
 
 #include <algorithm>
 #include <chrono>
@@ -38,7 +38,7 @@ using mjpc::spline::SplineInterpolation;
 using mjpc::spline::TimeSpline;
 
 // initialize data and settings
-void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
+void MPOPIPlanner::Initialize(mjModel* model, const Task& task) {
   // delete mjData instances since model might have changed.
   data_.clear();
   // allocate one mjData for nominal.
@@ -76,7 +76,7 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
 }
 
 // allocate memory
-void MPPIPlanner::Allocate() {
+void MPOPIPlanner::Allocate() {
   // initial state
   int num_state = model->nq + model->nv + model->na;
 
@@ -95,6 +95,16 @@ void MPPIPlanner::Allocate() {
   
   // ===== EC ===== //
   weights.resize(kMaxTrajectory); // 'weights' 벡터의 크기를 최대 궤적 수만큼 할당
+  sigma.resize(kMaxTrajectoryHorizon * model->nu, 1.0);
+
+  for (int t = 0; t < kMaxTrajectoryHorizon; ++t) {
+    for (int k = 0; k < model->nu; ++k) {
+      double range = 0.5 * (model->actuator_ctrlrange[2 * k + 1] -
+                            model->actuator_ctrlrange[2 * k]);
+      // actuator 범위의 10% 정도로 시작
+      sigma[t * model->nu + k] = 0.1 * range;
+    }
+  }
   // ============== //
 
   // trajectory and parameters
@@ -108,7 +118,7 @@ void MPPIPlanner::Allocate() {
 }
 
 // reset memory to zeros
-void MPPIPlanner::Reset(int horizon,
+void MPOPIPlanner::Reset(int horizon,
                             const double* initial_repeated_action) {
   // state
   std::fill(state.begin(), state.end(), 0.0);
@@ -151,84 +161,197 @@ void MPPIPlanner::Reset(int horizon,
 }
 
 // set state
-void MPPIPlanner::SetState(const State& state) {
+void MPOPIPlanner::SetState(const State& state) {
   state.CopyTo(this->state.data(), this->mocap.data(), this->userdata.data(),
                &this->time);
 }
-
-int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
-                                              ThreadPool& pool) {
-  // resample nominal policy to current time
+int MPOPIPlanner::OptimizePolicyCandidates(int ncandidates,
+                                           int horizon,
+                                           ThreadPool& pool) {
+  // 0) 현재 시간에 맞춰 nominal plan을 horizon 길이로 맞춰둠
   this->UpdateNominalPolicy(horizon);
 
-  // if num_trajectory_ has changed, use it in this new iteration.
-  // num_trajectory_ might change while this function runs. Keep it constant
-  // for the duration of this function.
-  int num_trajectory = num_trajectory_;
-  ncandidates = std::min(ncandidates, num_trajectory);
+  // plan이 비어 있으면 뭘 해도 segfault라 그냥 끝냄
+  {
+    const std::shared_lock<std::shared_mutex> lock(mtx_);
+    if (policy.plan.Size() == 0) {
+      return 0;
+    }
+  }
+
+  // MPOPI 파라미터
+  const int L = 2;                         // 외부 반복 횟수
+  const int num_traj = num_trajectory_;    // 한 사이클에서 뽑을 샘플 개수
+  const int K = mju_max(1, num_traj / 4);  // 엘리트 개수
+
   ResizeMjData(model, pool.NumThreads());
 
-  // ----- rollout noisy policies ----- //
-  // start timer
   auto rollouts_start = std::chrono::steady_clock::now();
 
-  // ==================== EC ==================== //
-  float mppi_lambda_ = 1.0f;
+  for (int l = 0; l < L; ++l) {
+    // 1) 현재 policy 주변에서 N개 샘플 만들어 rollout
+    {
+      const std::shared_lock<std::shared_mutex> lock(mtx_);
+      policy.plan.SetInterpolation(interpolation_);
+    }
+    this->Rollouts(num_traj, horizon, pool);
 
-  // simulate noisy policies
-  policy.plan.SetInterpolation(interpolation_);
-  this->Rollouts(num_trajectory, horizon, pool);
+    // 2) 비용 순서대로 정렬 (trajectory_order에 인덱스만 담음)
+    trajectory_order.clear();
+    trajectory_order.reserve(num_traj);
+    for (int i = 0; i < num_traj; ++i) trajectory_order.push_back(i);
+    std::sort(trajectory_order.begin(), trajectory_order.end(),
+              [&](int a, int b) {
+                return trajectory[a].total_return <
+                       trajectory[b].total_return;
+              });
 
-  // 최소 비용(Cost) 찾기
-  double min_return_cost = std::numeric_limits<double>::infinity();
-  for (int i = 0; i < num_trajectory; ++i) {
-    min_return_cost = std::min(min_return_cost, trajectory[i].total_return);
-  }
-
-  double sum_weights = 0.0;
-  for (int i = 0; i < num_trajectory; ++i) {
-    double cost_diff = trajectory[i].total_return - min_return_cost;
-    double exponent = -(cost_diff) / mppi_lambda_;
-    weights[i] = std::exp(exponent);
-    sum_weights += weights[i];
-  }
-
-  for (int i = 0; i < num_trajectory; ++i) weights[i] /= sum_weights;    
-
-  { // <-- 잠금 시작
-    const std::unique_lock<std::shared_mutex> lock(mtx_);
-
-    TimeSpline new_plan = policy.plan;  // 기준은 기존 policy
-
-    for (int i = 0; i < num_trajectory; ++i) {
-      for (int t = 0; t < policy.plan.Size(); ++t) {
-        auto base_node = new_plan.begin() + t;
-        auto pol_node  = policy.plan.begin() + t;
-        auto cand_node = candidate_policy[i].plan.begin() + t;
-
-        for (int k = 0; k < model->nu; ++k) {
-          double noise = cand_node->values()[k] - pol_node->values()[k];
-          // u <- u + delta u
-          base_node->values()[k] += weights[i] * noise;
-        }
-      }
+    // 3) 앞부분 L-1번은 CMA+CE 업데이트만 수행
+    if (l < L - 1) {
+      this->UpdateCovarianceFromElite(K, horizon);
+      continue;
     }
 
-    policy.plan = std::move(new_plan);
+    // 4) 마지막 1번은 MPPI 업데이트
+    //    w_i = exp(-(J_i - J_best)/lambda)
+    const double lambda = 10.0;  // ← 비용 스케일에 맞게 조정
+    double best_cost = trajectory[trajectory_order[0]].total_return;
+
+    double w_sum = 0.0;
+    for (int i = 0; i < num_traj; ++i) {
+      double c = trajectory[i].total_return;
+      double wi = std::exp(-(c - best_cost) / lambda);
+      weights[i] = wi;
+      w_sum += wi;
+    }
+    if (w_sum < 1e-12) w_sum = 1.0;
+    for (int i = 0; i < num_traj; ++i) weights[i] /= w_sum;
+
+    // 실제로 policy.plan을 덮어쓰는 구간
+    {
+      const std::unique_lock<std::shared_mutex> lock(mtx_);
+
+      TimeSpline new_plan = policy.plan;
+      int plan_size = static_cast<int>(policy.plan.Size());
+
+      for (int t = 0; t < plan_size; ++t) {
+        auto new_node = new_plan.begin() + t;
+
+        // 일단 0으로
+        for (int u = 0; u < model->nu; ++u) {
+          new_node->values()[u] = 0.0;
+        }
+
+        // 모든 샘플의 같은 시점 t를 weight로 평균
+        for (int i = 0; i < num_traj; ++i) {
+          int cand_size =
+              static_cast<int>(candidate_policy[i].plan.Size());
+          if (t >= cand_size) continue;  // 이 샘플은 t시점이 없음
+
+          auto cand_node = candidate_policy[i].plan.begin() + t;
+          for (int u = 0; u < model->nu; ++u) {
+            new_node->values()[u] +=
+                weights[i] * cand_node->values()[u];
+          }
+        }
+
+        // actuator 범위로 묶어줌
+        Clamp(new_node->values().data(),
+              model->actuator_ctrlrange, model->nu);
+      }
+
+      // 최종 정책 교체
+      policy.plan = std::move(new_plan);
+
+      // 다음 사이클에서도 이 정책을 후보로 쓰게 저장
+      candidate_policy[num_traj - 1] = policy;
+      winner = num_traj - 1;
+    }
   }
 
-  candidate_policy[num_trajectory - 1].plan = policy.plan;
-  winner = num_trajectory - 1;
-  // ==================== EC ==================== //
-
-  // stop timer
   rollouts_compute_time = GetDuration(rollouts_start);
-
   return 0;
 }
 
+
+// 상위 K개의 샘플만으로 Σ_t 와 μ_t 를 한 번씩 당겨놓는다.
+// 이 단계에서는 policy.plan을 "읽기 + 조금 수정"하므로 shared → unique로 나눠도 되지만
+// 간단히 unique로 잡고 끝내자.
+void MPOPIPlanner::UpdateCovarianceFromElite(int K, int horizon) {
+  if (K <= 0) return;
+
+  const double alpha   = 0.7;  // 학습률
+  const double ce_temp = 1.0;  // 엘리트 weight 온도
+
+  // plan에 접근하니까 락
+  const std::unique_lock<std::shared_mutex> lock(mtx_);
+
+  int plan_size = static_cast<int>(policy.plan.Size());
+  if (plan_size == 0) return;  // 또 한 번 방어
+
+  // 실제로 다룰 시간 길이
+  int H = mju_min(horizon, kMaxTrajectoryHorizon);
+  H     = mju_min(H, plan_size);
+
+  // 1) 엘리트 weight 계산
+  std::vector<double> w(K);
+  double best_cost = trajectory[trajectory_order[0]].total_return;
+  double w_sum     = 0.0;
+  for (int e = 0; e < K; ++e) {
+    double c  = trajectory[trajectory_order[e]].total_return;
+    double we = std::exp(-(c - best_cost) / ce_temp);
+    w[e] = we;
+    w_sum += we;
+  }
+  if (w_sum < 1e-12) w_sum = 1.0;
+  for (int e = 0; e < K; ++e) w[e] /= w_sum;  // Σw = 1
+
+  // 2) 시간/입력별로 Σ_t, μ_t 업데이트
+  for (int t = 0; t < H; ++t) {
+    auto mu_node = policy.plan.begin() + t;
+
+    for (int u = 0; u < model->nu; ++u) {
+      int idx = t * model->nu + u;
+
+      double mu_tu   = mu_node->values()[u];
+      double old_var = sigma[idx] * sigma[idx];
+
+      double var_term  = 0.0;
+      double mean_term = 0.0;
+
+      for (int e = 0; e < K; ++e) {
+        int traj_id = trajectory_order[e];
+        int cand_size =
+            static_cast<int>(candidate_policy[traj_id].plan.Size());
+        if (t >= cand_size) continue;  // 이 엘리트는 t 시점이 없음
+
+        auto elite_node = candidate_policy[traj_id].plan.begin() + t;
+        double u_ku = elite_node->values()[u];
+        double diff = u_ku - mu_tu;
+
+        var_term  += w[e] * diff * diff;
+        mean_term += w[e] * u_ku;
+      }
+
+      // 논문식:
+      // Σ_t ← (1 - α) Σ_t + α * var_term
+      double new_var = (1.0 - alpha) * old_var + alpha * var_term;
+      // μ_t ← (1 - α) μ_t + α * mean_term
+      double new_mu  = (1.0 - alpha) * mu_tu + alpha * mean_term;
+
+      sigma[idx] = std::sqrt(mju_max(new_var, 1.0e-12));
+
+      // actuator 범위로 클램프
+      double lo = model->actuator_ctrlrange[2 * u];
+      double hi = model->actuator_ctrlrange[2 * u + 1];
+      mu_node->values()[u] = mju_clip(new_mu, lo, hi);
+    }
+  }
+}
+
+
 // optimize nominal policy using random sampling
-void MPPIPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
+void MPOPIPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
 
 
   {
@@ -247,13 +370,20 @@ void MPPIPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
 }
 
 // compute trajectory using nominal policy
-void MPPIPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
+// void MPOPIPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
+//   // set policy
+//   auto nominal_policy = [this](double* action,
+//                                const double* state,
+//                                double time) {
+//     this->policy.Action(action, state, time);
+//   };
+
+void MPOPIPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
   // set policy
   auto nominal_policy = [&cp = candidate_policy[num_trajectory_-1]](
                             double* action, const double* state, double time) {
     cp.Action(action, state, time);
   };
-
   // rollout nominal policy
   trajectory[0].Rollout(nominal_policy, task, model, data_[0].get(),
                         state.data(), time, mocap.data(), userdata.data(),
@@ -261,7 +391,7 @@ void MPPIPlanner::NominalTrajectory(int horizon, ThreadPool& pool) {
 }
 
 // set action from policy
-void MPPIPlanner::ActionFromPolicy(double* action, const double* state,
+void MPOPIPlanner::ActionFromPolicy(double* action, const double* state,
                                        double time, bool use_previous) {
   const std::shared_lock<std::shared_mutex> lock(mtx_);
   if (use_previous) {
@@ -269,32 +399,19 @@ void MPPIPlanner::ActionFromPolicy(double* action, const double* state,
   } else {
     policy.Action(action, state, time);
   }
-
-  // // =============== EC =============== //
-  // if (this->model) {
-  //   int num_id = mj_name2id(this->model, mjOBJ_NUMERIC, "F_des");
-  //   if (num_id >= 0) {
-  //     double* ptr =
-  //         this->model->numeric_data + this->model->numeric_adr[num_id];
-  //     ptr[0] = F_des[0];
-  //     ptr[1] = F_des[1];
-  //     ptr[2] = F_des[2];
-  //   }
-  // }
-  // // ================================== //
   
-  // std::cout << "Applied Action (t=" << time << "): [";
-  // for (int i = 0; i < model->nu; i++) {
-  //   std::cout << action[i];
-  //   if (i < model->nu - 1) {
-  //     std::cout << ", ";
-  //   }
-  // }
-  // std::cout << "]" << std::endl;
+  std::cout << "Applied Action (t=" << time << "): [";
+  for (int i = 0; i < model->nu; i++) {
+    std::cout << action[i];
+    if (i < model->nu - 1) {
+      std::cout << ", ";
+    }
+  }
+  std::cout << "]" << std::endl;
 }
 
 // update policy via resampling
-void MPPIPlanner::UpdateNominalPolicy(int horizon) {
+void MPOPIPlanner::UpdateNominalPolicy(int horizon) {
   // dimensions
   int num_spline_points = candidate_policy[winner].num_spline_points;
 
@@ -385,37 +502,36 @@ void MPPIPlanner::UpdateNominalPolicy(int horizon) {
 }
 
 // add random noise to nominal policy
-void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
-  // start timer
+void MPOPIPlanner::AddNoiseToPolicy(double start_time, int i) {
   auto noise_start = std::chrono::steady_clock::now();
-
-  // sampling token
   absl::BitGen gen_;
 
-  // get standard deviation, fixed or mixture of noise_exploration[0,1]
-  double std = noise_exploration[0];
-  constexpr double kStd2Proportion = 0.2;  // hardcoded proportion of 2nd std
-  if (noise_exploration[1] > 0 && absl::Bernoulli(gen_, kStd2Proportion)) {
-    std = noise_exploration[1];
-  }
+  int plan_idx = 0;
+  for (auto& node : candidate_policy[i].plan) {
+    if (plan_idx >= kMaxTrajectoryHorizon) break;  // 방어
 
-  for (const TimeSpline::Node& node : candidate_policy[i].plan) {
-    for (int k = 0; k < model->nu; k++) {
-      double scale = 0.5 * (model->actuator_ctrlrange[2 * k + 1] -
-                            model->actuator_ctrlrange[2 * k]);
-      double noise = absl::Gaussian<double>(gen_, 0.0, scale * std);
-      // double noise = absl::Gaussian<double>(gen_, 0.0, std);
-      node.values()[k] += noise;
+    for (int u = 0; u < model->nu; ++u) {
+      double std = sigma[plan_idx * model->nu + u];
+      double eps = absl::Gaussian<double>(gen_, 0.0, std);
+
+      node.values()[u] += eps;
+
+      int off = i * (model->nu * kMaxTrajectoryHorizon)
+                + plan_idx * model->nu + u;
+      if (off < noise.size()) {
+        noise[off] = eps;
+      }
     }
+
     Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+    plan_idx++;
   }
 
-  // end timer
   IncrementAtomic(noise_compute_time, GetDuration(noise_start));
 }
 
 // compute candidate trajectories
-void MPPIPlanner::Rollouts(int num_trajectory, int horizon,
+void MPOPIPlanner::Rollouts(int num_trajectory, int horizon,
                                ThreadPool& pool) {
   // reset noise compute time
   noise_compute_time = 0.0;
@@ -456,12 +572,12 @@ void MPPIPlanner::Rollouts(int num_trajectory, int horizon,
 }
 
 // return trajectory with best total return
-const Trajectory* MPPIPlanner::BestTrajectory() {
+const Trajectory* MPOPIPlanner::BestTrajectory() {
   return winner >= 0 ? &trajectory[winner] : nullptr;
 }
 
 // visualize planner-specific traces
-void MPPIPlanner::Traces(mjvScene* scn) {
+void MPOPIPlanner::Traces(mjvScene* scn) {
   // sample color
   float color[4];
   color[0] = 1.0;
@@ -506,42 +622,34 @@ void MPPIPlanner::Traces(mjvScene* scn) {
 }
 
 // planner-specific GUI elements
-void MPPIPlanner::GUI(mjUI& ui) {
+void MPOPIPlanner::GUI(mjUI& ui) {
   mjuiDef defSampling[] = {
       {mjITEM_SLIDERINT, "Rollouts", 2, &num_trajectory_, "0 1"},
       {mjITEM_SELECT, "Spline", 2, &interpolation_,
        "Zero\nLinear\nCubic\nBeizer"},
       {mjITEM_SLIDERINT, "Spline Pts", 2, &policy.num_spline_points, "0 1"},
       {mjITEM_SLIDERNUM, "Noise Std", 2, noise_exploration, "0 1"},
-      {mjITEM_SLIDERNUM, "Noise Std2", 2, noise_exploration+1, "0 1"},
+      // {mjITEM_SLIDERNUM, "Noise Std2", 2, noise_exploration+1, "0 1"},
       {mjITEM_CHECKBYTE, "Sliding plan", 2, &sliding_plan_, ""},
-
-      // =============== EC =============== //
-      // Fx desired
-      {mjITEM_SLIDERNUM, "F_des_x", 2, &F_des[0], "-50 50"},
-      {mjITEM_SLIDERNUM, "F_des_y", 2, &F_des[1], "-50 50"},
-      {mjITEM_SLIDERNUM, "F_des_z", 2, &F_des[2], "-50 50"},
-      // ================================== //
-
       {mjITEM_END}};
 
   // set number of trajectory slider limits
   mju::sprintf_arr(defSampling[0].other, "%i %i", 1, kMaxTrajectory);
 
   // set spline point limits
-  mju::sprintf_arr(defSampling[2].other, "%i %i", MinSamplingSplinePoints1,
-                   MaxSamplingSplinePoints1);
+  mju::sprintf_arr(defSampling[2].other, "%i %i", MinSamplingSplinePoints2,
+                   MaxSamplingSplinePoints2);
 
   // set noise standard deviation limits
-  mju::sprintf_arr(defSampling[3].other, "%f %f", MinNoiseStdDev1,
-                   MaxNoiseStdDev1);
+  mju::sprintf_arr(defSampling[3].other, "%f %f", MinNoiseStdDev2,
+                   MaxNoiseStdDev2);
 
   // add sampling planner
   mjui_add(&ui, defSampling);
 }
 
 // planner-specific plots
-void MPPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
+void MPOPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
                             int planner_shift, int timer_shift, int planning,
                             int* shift) {
   // ----- planner ----- //
@@ -584,19 +692,6 @@ void MPPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
   mju::strcpy_arr(fig_timer->linename[1 + timer_shift], "Rollout");
   mju::strcpy_arr(fig_timer->linename[2 + timer_shift], "Policy Update");
 
-  // =============== EC =============== //
-  if (this->model) {
-    int num_id = mj_name2id(this->model, mjOBJ_NUMERIC, "F_des");
-    if (num_id >= 0) {
-      double* ptr =
-          this->model->numeric_data + this->model->numeric_adr[num_id];
-      ptr[0] = F_des[0];
-      ptr[1] = F_des[1];
-      ptr[2] = F_des[2];
-    }
-  }
-  // ================================== //
-
   // planner shift
   shift[0] += 1;
 
@@ -604,18 +699,18 @@ void MPPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
   shift[1] += 3;
 }
 
-double MPPIPlanner::CandidateScore(int candidate) const {
+double MPOPIPlanner::CandidateScore(int candidate) const {
   return trajectory[trajectory_order[candidate]].total_return;
 }
 
 // set action from candidate policy
-void MPPIPlanner::ActionFromCandidatePolicy(double* action, int candidate,
+void MPOPIPlanner::ActionFromCandidatePolicy(double* action, int candidate,
                                                 const double* state,
                                                 double time) {
   candidate_policy[trajectory_order[candidate]].Action(action, state, time);
 }
 
-void MPPIPlanner::CopyCandidateToPolicy(int candidate) {
+void MPOPIPlanner::CopyCandidateToPolicy(int candidate) {
   // set winner
   winner = trajectory_order[candidate];
 

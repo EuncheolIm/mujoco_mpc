@@ -6,7 +6,7 @@
  
 -  <option integrator="implicitfast"/>
 +  <!-- <option integrator="implicitfast"/> -->
-+  <option timestep = "0.001"/>
++  <option timestep = "0.002"/>
  
    <default>
      <default class="panda">

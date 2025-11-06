@@ -95,6 +95,13 @@ add_library(
 
   planners/MPPI/policy.cc
   planners/MPPI/policy.h
+
+  # MPOPI
+  planners/MPOPI/planner.cc
+  planners/MPOPI/planner.h
+
+  planners/MPOPI/policy.cc
+  planners/MPOPI/policy.h
   # ===== EC ===== #
   
   planners/planner.cc

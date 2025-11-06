@@ -5,13 +5,16 @@
 
   <custom>
     <numeric name="agent_planner" data="0" />
-    <numeric name="agent_horizon" data="0.5" />
+    <numeric name="agent_horizon" data="0.2" />  
     <numeric name="agent_timestep" data="0.01" />
     <numeric name="agent_policy_width" data="0.0035" />
     <numeric name="sampling_trajectories" data="60"/>
     <numeric name="sampling_spline_points" data="7" />
-    <numeric name="sampling_exploration" data="0.8" />
+    <numeric name="sampling_exploration" data="1" />
     <numeric name="gradient_spline_points" data="6" />
+    <!-- // =============== EC =============== // -->
+    <numeric name="F_des" size="3" data="0 0 0"/>
+    <!-- // ================================== // -->
   </custom>
 
   <statistic extent="1.5" center="0.1 0.2 0.3"/>
@@ -25,6 +28,13 @@
   <default>
     <geom solref=".001 1"/>
   </default>
+
+  <asset>
+    <material class="panda" name="white_trans" rgba="1 1 1 0.3"/>
+    <material class="panda" name="off_white_trans" rgba="0.901961 0.921569 0.929412 0.3"/>
+    <material class="panda" name="black_trans" rgba="0.25 0.25 0.25 0.3"/>
+
+  </asset>
 
   <compiler texturedir="./textures"/>
 
@@ -41,30 +51,31 @@
     </body> -->
 
 
-    <body name="box" pos="0.4 0.0 0.5" mocap="true">
-      <!-- <freejoint/> -->
-      <!-- <geom name="box"  type="box" size="0.02 0.03 0.02" priority="1" condim="6" friction="1 .01 .003"/> -->
+    <!-- <body name="box" pos="0.4 0.0 0.5" mocap="true">
+      <freejoint/>
+      <geom name="box"  type="box" size="0.02 0.03 0.02" priority="1" condim="6" friction="1 .01 .003"/>
       <geom name="box"  type="box" size="0.02 0.03 0.02" contype="0" conaffinity="0" rgba=".5 .5 .5 .3"/>
       <site name="box1" type="box" pos="0  .026 0" size="0.021 0.005 0.021" rgba="1 .1 .1 1"/>
       <site name="box2" type="box" pos="0 -.026 0" size="0.021 0.005 0.021" rgba=".1 .1 1 1"/>
-    </body>
+    </body> -->
 
     <!--  hand_copy -->
-    <body name="hand_copy" pos="0.5 0.3 0.5" quat="0.9238795 0 0 -0.3826834" mocap="true">
+    <!-- <body name="hand_copy" pos="0.5 0.3 0.5" quat="0.9238795 0 0 -0.3826834" mocap="true"> -->
+    <body name="hand_copy" pos="0.5 0.3 0.5" quat="0 1 0 0" mocap="true">
       <inertial mass="0.73" pos="-0.01 0 0.03" diaginertia="0.001 0.0025 0.0017"/>
-      <geom mesh="hand_0" material="off_white" class="visual" contype="0" conaffinity="0"  />
-      <geom mesh="hand_1" material="black" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_2" material="black" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_3" material="white" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_4" material="off_white" class="visual" contype="0" conaffinity="0" />
+      <geom mesh="hand_0" material="off_white_trans" class="visual" contype="0" conaffinity="0"  />
+      <geom mesh="hand_1" material="black_trans" class="visual" contype="0" conaffinity="0" />
+      <geom mesh="hand_2" material="black_trans" class="visual" contype="0" conaffinity="0" />
+      <geom mesh="hand_3" material="white_trans" class="visual" contype="0" conaffinity="0" />
+      <geom mesh="hand_4" material="off_white_trans" class="visual" contype="0" conaffinity="0" />
       <geom mesh="hand_c" class="collision" contype="0" conaffinity="0"/>
       
       <site name="hand_copy_site" pos="0 0 0"/>
       
       <body name="left_finger_copy" pos="0 0 0.0584">
         <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
-        <geom mesh="finger_0" material="off_white" class="visual" contype="0" conaffinity="0" />
-        <geom mesh="finger_1" material="black" class="visual" contype="0" conaffinity="0" />
+        <geom mesh="finger_0" material="off_white_trans" class="visual" contype="0" conaffinity="0" />
+        <geom mesh="finger_1" material="black_trans" class="visual" contype="0" conaffinity="0" />
         <geom mesh="finger_0" class="collision" contype="0" conaffinity="0" />
         <geom class="fingertip_pad_collision_1" contype="0" conaffinity="0" />
         <geom class="fingertip_pad_collision_2" contype="0" conaffinity="0" />
@@ -75,8 +86,8 @@
       
       <body name="right_finger_copy" pos="0 0 0.0584" quat="0 0 0 1">
         <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
-        <geom mesh="finger_0" material="off_white" class="visual" contype="0" conaffinity="0" />
-        <geom mesh="finger_1" material="black" class="visual" contype="0" conaffinity="0" />
+        <geom mesh="finger_0" material="off_white_trans" class="visual" contype="0" conaffinity="0" />
+        <geom mesh="finger_1" material="black_trans" class="visual" contype="0" conaffinity="0" />
         <geom mesh="finger_0" class="collision" contype="0" conaffinity="0" />
         <geom class="fingertip_pad_collision_1" contype="0" conaffinity="0" />
         <geom class="fingertip_pad_collision_2" contype="0" conaffinity="0" />
@@ -97,25 +108,32 @@
     <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188 0.005 0.005"/>
      -->
      <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188"/> -->
-     <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 "/>
+     <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853  "/>
   </keyframe>
 
   <sensor> 
-  <!--user ="" type, weight, weight_lower, weight_upper, .. ""-->
-    <user name="Reach" dim="3" user="2 40 0 100 0.01"/>
-    <user name="joint_cent" dim="7" user="2 2 0 10 0.01"/>
-    <!-- <user name="Bring" dim="6" user="2 .1 0 1 0.003"/> -->
-    <framepos name="hand" objtype="site" objname="hand_site"/>
-    <framepos name="box" objtype="geom" objname="box"/>
-    <framepos name="box1" objtype="site" objname="box1"/>
-    <framepos name="box2" objtype="site" objname="box2"/>
+  <!--user : cost ="" type, weight, weight_lower, weight_upper, .. ""-->
+    <!-- Tracking cost -->
+    <user name="Reach_pos" dim="3" user="2 30 0 100 0.01"/>
+    <user name="Reach_ori" dim="3" user="2 10 0 100 0.01"/>
 
+    <!-- Joint maintains center of the joint range cost -->
+    <user name="joint_cent" dim="7" user="2 4 0 10 0.01"/>
+
+    <!-- Joint velocity limit cost -->
+    <!-- <user name="joint_vel" dim="7" user="2 0 0 10 0.01"/> -->
+    <user name="joint_vel_penalty" dim="7" user="2 2 0 100 0.01"/>
+
+    <user name="EE_Force" dim="3" user="2 0.007 0 0.1 0.001"/>
+    <user name="u_reg" dim="7" user="2 0.01 0 1 0.01"/>
+
+    <framepos name="hand" objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient" objtype="site" objname="hand_site"/>
+
+    <framequat name="hand_target_orient" objtype="site" objname="hand_copy_site"/>
     <framepos name="hand_target" objtype="site" objname="hand_copy_site"/>
-    <!-- <framepos name="target" objtype="geom" objname="target"/>
-    <framepos name="target1" objtype="site" objname="target1"/>
-    <framepos name="target2" objtype="site" objname="target2"/> -->
+
     <framepos name="trace0" objtype="site" objname="hand_site"/>
-    <!-- <framepos name="trace1" objtype="site" objname="touch_right"/> -->
   </sensor>
 
   <!-- modified from: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda -->
