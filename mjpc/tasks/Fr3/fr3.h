@@ -41,6 +41,14 @@ class FR3 : public Task {
 
  private:
   ResidualFn residual_;
+
+  // Auto-trajectory state for the approach phase. Captured on first call to
+  // TransitionLocked, then mocap_pos is linearly interpolated from
+  // traj_start_mocap_ to traj_final_mocap_ over approach_time seconds.
+  bool traj_init_ = false;
+  double traj_t0_ = 0.0;
+  double traj_start_mocap_[3] = {0, 0, 0};
+  double traj_final_mocap_[3] = {0, 0, 0};
 };
 }  // namespace mjpc
 
