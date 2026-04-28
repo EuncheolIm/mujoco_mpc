@@ -72,6 +72,30 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
                 kMaxTrajectory);
   }
 
+  // MPPI temperature (default if numeric absent).
+  mppi_lambda_ = GetNumberOrDefault(1.0, model, "sampling_lambda");
+
+  // DC-per-rollout noise: if 1, one Gaussian per (rollout, joint) broadcast
+  // across all knots (reference tau-MPPI). If 0, each knot independent.
+  noise_dc_per_rollout_ =
+      GetNumberOrDefault(0.0, model, "sampling_dc_noise") != 0.0;
+
+  // Optional per-actuator std vector. Size must equal model->nu, else cleared
+  // (falls back to legacy ctrlrange-scaled noise).
+  noise_std_per_joint_.clear();
+  int sj_id = mj_name2id(model, mjOBJ_NUMERIC, "sampling_std_per_joint");
+  if (sj_id >= 0) {
+    int sj_size = model->numeric_size[sj_id];
+    if (sj_size != model->nu) {
+      mju_error_i(
+          "sampling_std_per_joint size mismatch: expected nu=%d entries",
+          model->nu);
+    }
+    int sj_adr = model->numeric_adr[sj_id];
+    noise_std_per_joint_.assign(model->numeric_data + sj_adr,
+                                model->numeric_data + sj_adr + sj_size);
+  }
+
   winner = 0;
 }
 
@@ -172,9 +196,6 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // start timer
   auto rollouts_start = std::chrono::steady_clock::now();
 
-  // ==================== EC ==================== //
-  float mppi_lambda_ = 1.0f;
-
   // simulate noisy policies
   policy.plan.SetInterpolation(interpolation_);
   this->Rollouts(num_trajectory, horizon, pool);
@@ -208,7 +229,7 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
 
         for (int k = 0; k < model->nu; ++k) {
           double noise = cand_node->values()[k] - pol_node->values()[k];
-          // u <- u + delta u
+          // u <- u + w_i * delta u
           base_node->values()[k] += weights[i] * noise;
         }
       }
@@ -399,15 +420,42 @@ void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
     std = noise_exploration[1];
   }
 
-  for (const TimeSpline::Node& node : candidate_policy[i].plan) {
-    for (int k = 0; k < model->nu; k++) {
+  // Per-joint sigma_k. Either from <sampling_std_per_joint> directly (matches
+  // reference tau-MPPI), or fallback to 0.5 * ctrlrange_width.
+  const bool use_per_joint =
+      static_cast<int>(noise_std_per_joint_.size()) == model->nu;
+  double sigma[64];  // assume nu small (panda has 7)
+  for (int k = 0; k < model->nu; k++) {
+    if (use_per_joint) {
+      sigma[k] = noise_std_per_joint_[k] * std;
+    } else {
       double scale = 0.5 * (model->actuator_ctrlrange[2 * k + 1] -
                             model->actuator_ctrlrange[2 * k]);
-      double noise = absl::Gaussian<double>(gen_, 0.0, scale * std);
-      // double noise = absl::Gaussian<double>(gen_, 0.0, std);
-      node.values()[k] += noise;
+      sigma[k] = scale * std;
     }
-    Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+  }
+
+  if (noise_dc_per_rollout_) {
+    // One Gaussian per (rollout, joint), broadcast to every knot.
+    double dc[64];
+    for (int k = 0; k < model->nu; k++) {
+      dc[k] = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
+    }
+    for (const TimeSpline::Node& node : candidate_policy[i].plan) {
+      for (int k = 0; k < model->nu; k++) {
+        node.values()[k] += dc[k];
+      }
+      Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+    }
+  } else {
+    // Independent Gaussian per knot.
+    for (const TimeSpline::Node& node : candidate_policy[i].plan) {
+      for (int k = 0; k < model->nu; k++) {
+        double noise = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
+        node.values()[k] += noise;
+      }
+      Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+    }
   }
 
   // end timer
@@ -518,9 +566,9 @@ void MPPIPlanner::GUI(mjUI& ui) {
 
       // =============== EC =============== //
       // Fx desired
-      {mjITEM_SLIDERNUM, "F_des_x", 2, &F_des[0], "-50 50"},
-      {mjITEM_SLIDERNUM, "F_des_y", 2, &F_des[1], "-50 50"},
-      {mjITEM_SLIDERNUM, "F_des_z", 2, &F_des[2], "-50 50"},
+      {mjITEM_SLIDERNUM, "F_des_x", 2, &F_des[0], "-10 10"},
+      {mjITEM_SLIDERNUM, "F_des_y", 2, &F_des[1], "-10 10"},
+      {mjITEM_SLIDERNUM, "F_des_z", 2, &F_des[2], "-10 10"},
       // ================================== //
 
       {mjITEM_END}};

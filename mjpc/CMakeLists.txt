@@ -88,6 +88,10 @@ add_library(
   # ===== EC ===== #
   tasks/Fr3/fr3.cc
   tasks/Fr3/fr3.h
+  tasks/Fr3/cost_fn.cc
+  tasks/Fr3/cost_fn.h
+  tasks/Fr3/dynamics.cc
+  tasks/Fr3/dynamics.h
 
   # MPPI
   planners/MPPI/planner.cc

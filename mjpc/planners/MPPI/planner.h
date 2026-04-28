@@ -33,9 +33,9 @@ namespace mjpc {
 
 // sampling planner limits
 inline constexpr int MinSamplingSplinePoints1 = 1;
-inline constexpr int MaxSamplingSplinePoints1 = 36;
+inline constexpr int MaxSamplingSplinePoints1 = 64;
 inline constexpr double MinNoiseStdDev1 = 0.0;
-inline constexpr double MaxNoiseStdDev1 = 10.0;
+inline constexpr double MaxNoiseStdDev1 = 1.0;
 
 class MPPIPlanner : public RankedPlanner {
  public:
@@ -142,6 +142,24 @@ class MPPIPlanner : public RankedPlanner {
   // ----- noise ----- //
   double noise_exploration[2] = {0};  // stds for sampling: N(0, exploration)
   std::vector<double> noise;
+
+  // Per-joint sampling std (size = model->nu) loaded from
+  // <numeric name="sampling_std_per_joint">. Behavior matches the reference
+  // tau-MPPI: noise std for joint k is `noise_std_per_joint_[k]` directly
+  // (units of N*m for torque control), globally scaled by sampling_exploration.
+  // If the numeric is absent, falls back to the ctrlrange-scaled formulation.
+  std::vector<double> noise_std_per_joint_;
+
+  // If true, sample one DC offset per (rollout, joint) and broadcast it to
+  // every knot of that rollout. This matches the reference tau-MPPI which
+  // generates K*J random numbers and applies them constantly over the horizon.
+  // If false, each knot gets an independent Gaussian sample (legacy behavior).
+  bool noise_dc_per_rollout_ = false;
+
+  // MPPI temperature: weight_i = exp(-(J_i - J_min) / mppi_lambda_).
+  // Larger -> more uniform weights -> policy update is less driven by any
+  // single lucky rollout -> less chatter, slower convergence.
+  double mppi_lambda_ = 1.0;
 mjpc::spline::SplineInterpolation interpolation_ =
       mjpc::spline::SplineInterpolation::kZeroSpline;
 
