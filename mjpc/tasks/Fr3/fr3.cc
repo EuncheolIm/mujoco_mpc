@@ -55,10 +55,7 @@ void FR3::ResidualFn::Residual(const mjModel* model, const mjData* data,
 }
 
 void FR3::TransitionLocked(mjModel* model, mjData* data) {
-  // Throttled monitor of EE contact force. Reads the "hand_force" sensor
-  // (3D in hand_site frame) and, if MJPC_FORCE_LOG=<path> is set, appends
-  // CSV rows "time,Fx,Fy,Fz" for offline plotting. Always prints to stderr
-  // every 0.1 s of sim time.
+  // WIP CHUNK 6: throttled monitor of EE contact force.
   static double next_log_time = 0.0;
   static FILE* csv_file = nullptr;
   static bool csv_inited = false;
@@ -84,50 +81,33 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
     next_log_time = data->time + 0.1;
   }
 
-  // Auto-trajectory: linearly interpolate mocap_pos from the EE site pose at
-  // q_home to the originally-set mocap pose over approach_time seconds. After
-  // the approach completes, the mocap is left untouched so the user can drag
-  // it manually in the viewer.
+  // Auto-trajectory: lerp mocap_pos from the EE site pose at q_home (or the
+  // current pose if home keyframe is missing) to its originally-set value.
   //
-  // The home pose is read from the "home" keyframe and propagated through FK
-  // on a temporary mjData. This avoids using `data->qpos`, which can already
-  // have drifted from q_home by the time TransitionLocked is first called
-  // (the arm falls under gravity during sim warm-up).
+  // On the very first call, `data->sensordata` is still zero because mjpc has
+  // applied the home keyframe but hasn't run mj_forward yet — reading the
+  // "hand" sensor would give (0,0,0) and the lerp would start at the world
+  // origin. We call `mj_kinematics(model, data)` to populate site_xpos from
+  // the current qpos and read the site position directly. This is safe (no
+  // allocation, no sensor callback) and idempotent.
   if (!traj_init_ || data->time < traj_t0_) {
     traj_t0_ = data->time;
+    traj_reach_time_ = -1.0;
+    if (model->nuserdata >= 4) data->userdata[3] = 0.0;
     for (int i = 0; i < 3; i++) traj_final_mocap_[i] = data->mocap_pos[i];
 
-    int key_id  = mj_name2id(model, mjOBJ_KEY,  "home");
     int site_id = mj_name2id(model, mjOBJ_SITE, "hand_site");
-
-    bool got_home = false;
-    if (key_id >= 0 && site_id >= 0) {
-      mjData* d_tmp = mj_makeData(model);
-      mju_copy(d_tmp->qpos, model->key_qpos + key_id * model->nq, model->nq);
-      mju_zero(d_tmp->qvel, model->nv);
-      mj_forward(model, d_tmp);
-
+    if (site_id >= 0) {
+      mj_kinematics(model, data);
+      const double* xp = data->site_xpos + 3 * site_id;
       // hand_copy quat (0 1 0 0) flips local +z to world -z, so the site at
-      // local (0,0,0.1034) ends up at world (mx, my, mz - 0.1034). To place
-      // the mocap site at the home EE position, set mocap_z = ee_z + 0.1034.
-      traj_start_mocap_[0] = d_tmp->site_xpos[3 * site_id + 0];
-      traj_start_mocap_[1] = d_tmp->site_xpos[3 * site_id + 1];
-      traj_start_mocap_[2] = d_tmp->site_xpos[3 * site_id + 2] + 0.1034;
-
-      mj_deleteData(d_tmp);
-      got_home = true;
-    }
-
-    if (!got_home) {
-      // fallback: use whatever the EE is at right now
-      double* hand = SensorByName(model, data, "hand");
-      if (hand) {
-        traj_start_mocap_[0] = hand[0];
-        traj_start_mocap_[1] = hand[1];
-        traj_start_mocap_[2] = hand[2] + 0.1034;
-      } else {
-        for (int i = 0; i < 3; i++) traj_start_mocap_[i] = traj_final_mocap_[i];
-      }
+      // local (0,0,0.1034) ends up at mocap_z - 0.1034 in world. To put the
+      // mocap site at the current EE position: mocap_z = ee_z + 0.1034.
+      traj_start_mocap_[0] = xp[0];
+      traj_start_mocap_[1] = xp[1];
+      traj_start_mocap_[2] = xp[2] + 0.1034;
+    } else {
+      for (int i = 0; i < 3; i++) traj_start_mocap_[i] = traj_final_mocap_[i];
     }
     traj_init_ = true;
   }
@@ -141,7 +121,64 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
                            s * (traj_final_mocap_[i] - traj_start_mocap_[i]);
     }
   }
-  // After approach: leave mocap_pos alone (user can drag in viewer).
+
+  // Publish state for the cost functions:
+  //   userdata[0..2] = traj_final_mocap_ -> the FINAL goal (== xml mocap pos
+  //                    until the user starts dragging).
+  //   userdata[3]    = hybrid_active flag. Activates once BOTH:
+  //                    (a) EE position + orientation reach the final goal
+  //                    (b) hybrid_switch_delay seconds have passed since (a)
+  //                    Latches once set — never falls back to 0.
+  if (model->nuserdata >= 4) {
+    for (int i = 0; i < 3; i++) data->userdata[i] = traj_final_mocap_[i];
+
+    if (data->userdata[3] < 0.5 && t_traj > approach_time) {
+      int site_id = mj_name2id(model, mjOBJ_SITE, "hand_site");
+      bool reached = false;
+      double dist_pos = 0.0, ang_err = 0.0;
+
+      if (site_id >= 0) {
+        // Position error: EE site vs final target site.
+        const double* xp = data->site_xpos + 3 * site_id;
+        double dx = xp[0] - traj_final_mocap_[0];
+        double dy = xp[1] - traj_final_mocap_[1];
+        // Final target site = traj_final_mocap_ + (0, 0, -0.1034) (quat flip).
+        double dz = xp[2] - (traj_final_mocap_[2] - 0.1034);
+        dist_pos = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        // Orientation error: |axis-angle(R_target^T * R_hand)|.
+        double* hand_quat = SensorByName(model, data, "hand_orient");
+        double* target_quat = SensorByName(model, data, "hand_target_orient");
+        if (hand_quat && target_quat) {
+          double tconj[4], err_q[4], err_aa[3];
+          mju_negQuat(tconj, target_quat);
+          mju_mulQuat(err_q, tconj, hand_quat);
+          mju_quat2Vel(err_aa, err_q, 1.0);
+          ang_err = std::sqrt(err_aa[0] * err_aa[0] + err_aa[1] * err_aa[1] +
+                              err_aa[2] * err_aa[2]);
+        }
+
+        double pos_thresh = GetNumberOrDefault(0.02, model, "hybrid_switch_dist");
+        double ang_thresh = GetNumberOrDefault(0.087, model, "hybrid_switch_angle");
+        reached = (dist_pos < pos_thresh) && (ang_err < ang_thresh);
+      }
+
+      double delay = GetNumberOrDefault(0.5, model, "hybrid_switch_delay");
+
+      if (reached && traj_reach_time_ < 0.0) {
+        traj_reach_time_ = data->time;
+        std::fprintf(stderr,
+                     "[t=%.3f] reached goal (pos=%.4f m, ang=%.3f rad), "
+                     "waiting %.2fs to switch to hybrid\n",
+                     data->time, dist_pos, ang_err, delay);
+      }
+      if (traj_reach_time_ >= 0.0 &&
+          data->time - traj_reach_time_ >= delay) {
+        data->userdata[3] = 1.0;
+        std::fprintf(stderr, "[t=%.3f] hybrid mode ON\n", data->time);
+      }
+    }
+  }
 
   double residuals[100];
   residual_.Residual(model, data, residuals);

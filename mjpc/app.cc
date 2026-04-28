@@ -452,6 +452,10 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
   sim->delete_old_m_d = true;
   sim->loadrequest = 2;
 
+  // Start paused so the user can inspect the initial pose / target before
+  // the controller engages. Toggle with the spacebar in the viewer.
+  sim->run = 0;
+
   sim->ui0_enable = absl::GetFlag(FLAGS_show_left_ui);
   sim->info = absl::GetFlag(FLAGS_show_info);
 }

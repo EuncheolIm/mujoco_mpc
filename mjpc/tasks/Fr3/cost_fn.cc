@@ -25,46 +25,26 @@ namespace mjpc::fr3 {
 
 namespace {
 
-// Hybrid pos-force blend factor in [0, 1] based on EE-to-target xy distance.
-//   alpha = 0  when xy distance >= d_far  -> pure position tracking
-//   alpha = 1  when xy distance <= d_near -> z-axis switches to force control
-// Linearly ramped between. Values configured via the
-// <numeric name="force_blend_distance" size="2"> element ([d_far, d_near]).
-double BlendAlpha(const mjModel* model, const mjData* data) {
-  double* hand = SensorByName(model, data, "hand");
-  double* target = SensorByName(model, data, "hand_target");
-  double dx = hand[0] - target[0];
-  double dy = hand[1] - target[1];
-  double dxy = std::sqrt(dx * dx + dy * dy);
-
-  double d_far = 0.10;
-  double d_near = 0.02;
-  int id = mj_name2id(model, mjOBJ_NUMERIC, "force_blend_distance");
-  if (id >= 0 && model->numeric_size[id] >= 2) {
-    int adr = model->numeric_adr[id];
-    d_far = model->numeric_data[adr + 0];
-    d_near = model->numeric_data[adr + 1];
-  }
-  if (d_far <= d_near) return dxy <= d_near ? 1.0 : 0.0;
-
-  double t = (d_far - dxy) / (d_far - d_near);
-  if (t <= 0.0) return 0.0;
-  if (t >= 1.0) return 1.0;
-  return t;
+// Binary phase flag set by FR3::TransitionLocked into data->userdata[3]:
+//   0 -> approach phase: full 6D position cost,         force cost OFF
+//   1 -> hybrid  phase: xy + ori position cost (z OFF), z force cost ON
+// The flag latches on once the EE first reaches the final goal — we never
+// fall back to position-only after contact, even if EE bounces away.
+bool HybridActive(const mjModel* model, const mjData* data) {
+  if (model->nuserdata < 4) return false;
+  return data->userdata[3] >= 0.5;
 }
 
 }  // namespace
 
 int CostPosition(const mjModel* model, const mjData* data, double* residual) {
-  // Hybrid pos-force: x,y always tracked; z relaxed as EE approaches target
-  // in xy (alpha -> 1), letting the force cost take over the z axis.
+  // Approach phase: full 3D position track. Hybrid phase: x,y only (z = 0).
   double* hand = SensorByName(model, data, "hand");
-  double* box = SensorByName(model, data, "hand_target");
-  double alpha = BlendAlpha(model, data);
+  double* target = SensorByName(model, data, "hand_target");
 
-  residual[0] = hand[0] - box[0];
-  residual[1] = hand[1] - box[1];
-  residual[2] = (1.0 - alpha) * (hand[2] - box[2]);
+  residual[0] = hand[0] - target[0];
+  residual[1] = hand[1] - target[1];
+  residual[2] = HybridActive(model, data) ? 0.0 : (hand[2] - target[2]);
   return 3;
 }
 
@@ -129,29 +109,13 @@ int CostJointVelocity(const mjModel* model, const mjData* data,
 }
 
 int CostForce(const mjModel* model, const mjData* data, double* residual) {
-  // Hybrid pos-force: only the z-axis force tracks F_des, gated by:
-  //   alpha       - xy distance to target (BlendAlpha)
-  //   force_gate  - simulation time (linear ramp after approach + hold)
-  // The x,y residual entries are zero (no horizontal force tracking).
-  double alpha = BlendAlpha(model, data);
+  // Approach phase: force cost = 0. Hybrid phase: track F_des on z only.
+  residual[0] = 0.0;
+  residual[1] = 0.0;
+  residual[2] = 0.0;
 
-  // Time gate: force activates after approach + hold, ramps over force_ramp_time.
-  double approach_time = GetNumberOrDefault(2.0, model, "approach_time");
-  double hold_time     = GetNumberOrDefault(1.0, model, "hold_time");
-  double ramp_time     = GetNumberOrDefault(0.5, model, "force_ramp_time");
+  if (!HybridActive(model, data)) return 3;
 
-  double t_force_start = approach_time + hold_time;
-  double t_force_full  = t_force_start + ramp_time;
-  double force_gate;
-  if (data->time < t_force_start) {
-    force_gate = 0.0;
-  } else if (data->time < t_force_full) {
-    force_gate = (data->time - t_force_start) / ramp_time;
-  } else {
-    force_gate = 1.0;
-  }
-
-  // Task-space force from torque: F = J^#T * tau.
   double jacp[3 * 7];
   double jacr[3 * 7];
   GetHandManipulatorJacobian(model, data, jacp, jacr);
@@ -168,9 +132,7 @@ int CostForce(const mjModel* model, const mjData* data, double* residual) {
   int id = mj_name2id(model, mjOBJ_NUMERIC, "F_des");
   const double* F_des = model->numeric_data + model->numeric_adr[id];
 
-  residual[0] = 0.0;
-  residual[1] = 0.0;
-  residual[2] = alpha * force_gate * (F_des[2] - F_task[2]);
+  residual[2] = F_des[2] - F_task[2];
   return 3;
 }
 
