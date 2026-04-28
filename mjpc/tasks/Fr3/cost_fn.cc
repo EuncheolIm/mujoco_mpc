@@ -110,29 +110,20 @@ int CostJointVelocity(const mjModel* model, const mjData* data,
 
 int CostForce(const mjModel* model, const mjData* data, double* residual) {
   // Approach phase: force cost = 0. Hybrid phase: track F_des on z only.
+  // Uses the contact force directly from the "hand_force" sensor (EE frame).
   residual[0] = 0.0;
   residual[1] = 0.0;
   residual[2] = 0.0;
 
   if (!HybridActive(model, data)) return 3;
 
-  double jacp[3 * 7];
-  double jacr[3 * 7];
-  GetHandManipulatorJacobian(model, data, jacp, jacr);
-
-  double M[49];
-  GetInertiaMatrix(model, data, M);
-
-  double JdynT[6 * 7];
-  GetDynamicallyConsistentJacobianT_FromM(model, jacp, jacr, M, JdynT);
-
-  double F_task[6];
-  mju_mulMatVec(F_task, JdynT, data->ctrl, 6, 7);
+  double* F_sensor = SensorByName(model, data, "hand_force");
+  if (!F_sensor) return 3;
 
   int id = mj_name2id(model, mjOBJ_NUMERIC, "F_des");
   const double* F_des = model->numeric_data + model->numeric_adr[id];
 
-  residual[2] = F_des[2] - F_task[2];
+  residual[2] = F_des[2] - F_sensor[2];
   return 3;
 }
 

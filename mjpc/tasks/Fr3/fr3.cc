@@ -22,6 +22,7 @@
 #include <mujoco/mujoco.h>
 #include "mjpc/task.h"
 #include "mjpc/tasks/Fr3/cost_fn.h"
+#include "mjpc/tasks/Fr3/dynamics.h"
 #include "mjpc/utilities.h"
 
 namespace mjpc {
@@ -69,12 +70,31 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
   }
   if (data->time >= next_log_time) {
     double* F = SensorByName(model, data, "hand_force");
+
+    // Also compute F_task = J#^T*(ctrl - qfrc_bias) to verify what the cost
+    // function sees (world frame, opposite sign of sensor when EE points down).
+    double F_task_z = 0.0;
+    if (model->nv == 7) {
+      double jacp[3 * 7], jacr[3 * 7];
+      fr3::GetHandManipulatorJacobian(model, data, jacp, jacr);
+      double M[49];
+      fr3::GetInertiaMatrix(model, data, M);
+      double JdynT[6 * 7];
+      fr3::GetDynamicallyConsistentJacobianT_FromM(model, jacp, jacr, M, JdynT);
+      double tau_ext[7];
+      for (int i = 0; i < 7; i++) tau_ext[i] = data->ctrl[i] - data->qfrc_bias[i];
+      double F_task[6];
+      mju_mulMatVec(F_task, JdynT, tau_ext, 6, 7);
+      F_task_z = F_task[2];
+    }
+
     if (F) {
-      std::fprintf(stderr, "[t=%6.3f] F = (%7.2f, %7.2f, %7.2f) N\n",
-                   data->time, F[0], F[1], F[2]);
+      std::fprintf(stderr,
+                   "[t=%6.3f] F_sensor=(%7.2f,%7.2f,%7.2f) F_task_z=%7.2f N\n",
+                   data->time, F[0], F[1], F[2], F_task_z);
       if (csv_file) {
-        std::fprintf(csv_file, "%.4f,%.4f,%.4f,%.4f\n",
-                     data->time, F[0], F[1], F[2]);
+        std::fprintf(csv_file, "%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                     data->time, F[0], F[1], F[2], F_task_z);
         std::fflush(csv_file);
       }
     }
