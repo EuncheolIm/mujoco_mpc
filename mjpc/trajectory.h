@@ -83,6 +83,9 @@ class Trajectory {
   std::vector<double> costs;     // horizon
   std::vector<double> trace;     // (horizon   x 3)
   double total_return;           // (1)
+  // Per-joint return for per-joint MPPI weighting (reference tau-MPPI). Sized
+  // to nu by UpdateReturn. costs_per_joint_buf is internal scratch.
+  std::vector<double> total_return_per_joint;
   bool failure;                  // true if last rollout had a warning
 
  private:

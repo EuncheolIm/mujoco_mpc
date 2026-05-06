@@ -138,6 +138,9 @@ class MPPIPlanner : public RankedPlanner {
 
   // ====== EC ===== //
   std::vector<double> weights;     // 샘플들의 가중치를 저장할 벡터
+  // Per-joint weights for reference-style tau-MPPI weighting.
+  // Layout: [rollout * nu + joint]. Sized in OptimizePolicyCandidates.
+  std::vector<double> weights_per_joint;
 
   // ----- noise ----- //
   double noise_exploration[2] = {0};  // stds for sampling: N(0, exploration)

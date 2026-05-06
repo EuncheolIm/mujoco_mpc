@@ -313,16 +313,38 @@ void Trajectory::UpdateReturn(const Task* task) {
   // reset
   total_return = 0;
 
+  // Per-joint return: nu inferred from action dimension. dim_action == nu for
+  // standard MJPC tasks. Skip per-joint accumulation if nu == 0.
+  int nu = dim_action;
+  if (nu > 0) {
+    if ((int)total_return_per_joint.size() != nu) {
+      total_return_per_joint.assign(nu, 0.0);
+    } else {
+      std::fill(total_return_per_joint.begin(), total_return_per_joint.end(),
+                0.0);
+    }
+  }
+  std::vector<double> costs_per_joint(nu, 0.0);
+
   for (int t = 0; t < horizon; t++) {
     // compute stage cost
     costs[t] = task->CostValue(DataAt(residual, t * task->num_residual));
 
     // update total return
     total_return += costs[t];
+
+    // per-joint accumulation
+    if (nu > 0) {
+      task->CostValuePerJoint(costs_per_joint.data(), nu,
+                              DataAt(residual, t * task->num_residual));
+      for (int j = 0; j < nu; ++j) total_return_per_joint[j] += costs_per_joint[j];
+    }
   }
 
   // normalize return by trajectory horizon
-  total_return /= mju_max(horizon, 1);
+  double inv_h = 1.0 / mju_max(horizon, 1);
+  total_return *= inv_h;
+  for (auto& v : total_return_per_joint) v *= inv_h;
 }
 
 }  // namespace mjpc

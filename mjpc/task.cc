@@ -263,4 +263,10 @@ double Task::CostValue(const double* residual) const {
   return InternalResidual()->CostValue(residual);
 }
 
+void Task::CostValuePerJoint(double* costs_out, int nu,
+                             const double* residual) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  InternalResidual()->CostValuePerJoint(costs_out, nu, residual);
+}
+
 }  // namespace mjpc

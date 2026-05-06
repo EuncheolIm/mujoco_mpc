@@ -10,11 +10,12 @@
  
    <default>
      <default class="panda">
-@@ -215,9 +216,10 @@
+@@ -215,9 +216,11 @@
                        <geom mesh="hand_3" material="white" class="visual"/>
                        <geom mesh="hand_4" material="off_white" class="visual"/>
                        <geom mesh="hand_c" class="collision"/>
 +                      <site name="hand_site" pos="0 0 0.1034"/>
++                      <geom name="probe_sphere" type="sphere" size="0.01" pos="0 0 0.1134" contype="1" conaffinity="1" condim="6" friction="0.5 0.005 0.0001" rgba="0.2 0.6 0.8 1"/>
                        <body name="left_finger" pos="0 0 0.0584">
                          <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
 -                        <joint name="finger_joint1" class="finger"/>
@@ -22,7 +23,7 @@
                          <geom mesh="finger_0" material="off_white" class="visual"/>
                          <geom mesh="finger_1" material="black" class="visual"/>
                          <geom mesh="finger_0" class="collision"/>
-@@ -229,7 +231,7 @@
+@@ -229,7 +232,7 @@
                        </body>
                        <body name="right_finger" pos="0 0 0.0584" quat="0 0 0 1">
                          <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>

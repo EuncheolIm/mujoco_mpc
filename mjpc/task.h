@@ -44,6 +44,19 @@ class ResidualFn {
                          bool weighted) const = 0;
   virtual double CostValue(const double* residual) const = 0;
 
+  // Per-joint cost decomposition for per-joint MPPI weighting (reference
+  // tau-MPPI compute_weights). Fills costs_out[0..nu-1] with the cost a
+  // given joint sees. Default: replicate the scalar CostValue into every
+  // entry, which makes per-joint weighting equivalent to scalar weighting.
+  // Tasks override to split residual terms into joint-common (EE pos/ori,
+  // force, manipulability, ...) and joint-specific (q centering, q velocity,
+  // ctrl reg) components.
+  virtual void CostValuePerJoint(double* costs_out, int nu,
+                                 const double* residual) const {
+    double total = CostValue(residual);
+    for (int j = 0; j < nu; ++j) costs_out[j] = total;
+  }
+
   // copies weights and parameters from the Task instance. This should be
   // called from the Task class.
   virtual void Update() = 0;
@@ -117,6 +130,11 @@ class Task {
   // calls CostValue on the pointer returned from InternalResidual(), while
   // holding a lock
   double CostValue(const double* residual) const;
+
+  // calls CostValuePerJoint on the pointer returned from InternalResidual(),
+  // while holding a lock.
+  void CostValuePerJoint(double* costs_out, int nu,
+                         const double* residual) const;
 
   virtual void ModifyScene(const mjModel* model, const mjData* data,
                            mjvScene* scene) const {}

@@ -29,6 +29,12 @@ class FR3 : public Task {
     explicit ResidualFn(const FR3* task) : mjpc::BaseResidualFn(task) {}
     void Residual(const mjModel* model, const mjData* data,
                   double* residual) const override;
+    // Per-joint cost decomposition for reference-style tau-MPPI weighting.
+    // Common terms (EE pos/ori, force track/reg, manipulability, ee_z_vel)
+    // are added to every joint; joint-specific terms (joint_cent[j],
+    // joint_vel_penalty[j], u_reg[j]) only contribute to joint j.
+    void CostValuePerJoint(double* costs_out, int nu,
+                           const double* residual) const override;
   };
   FR3() : residual_(this) {}
   void TransitionLocked(mjModel* model, mjData* data) override;
@@ -52,6 +58,29 @@ class FR3 : public Task {
   // Time when EE first reached the goal (pos + ori). -1 = not yet reached.
   // Hybrid mode activates `hybrid_switch_delay` seconds after this time.
   double traj_reach_time_ = -1.0;
+
+  // Wiping/polishing: wipe_t0_ is scheduled `wipe_delay` seconds after
+  // contact is FIRST confirmed (F_press_world_z below contact_threshold),
+  // not just when hybrid mode activates. This avoids the bug where the
+  // 1-second wipe-delay starts while EE is still hovering above the table.
+  // contact_t0_ = time of first contact (-1 = not yet); wipe_t0_ = time to
+  // begin wiping (-1 = not scheduled). wipe_center_ caches the (x,y) used
+  // as the circle origin (= traj_final_mocap_ at scheduling time).
+  double contact_t0_ = -1.0;
+  double wipe_t0_ = -1.0;
+  double wipe_center_[2] = {0, 0};
+
+  // Event-based step-target advancement. The mocap is parked on the home EE
+  // position, then offset by a step pattern. Each step waits for the robot to
+  // dwell within `target_advance_threshold` of the current target for
+  // `target_dwell_time` seconds before advancing — i.e. switch ON REACH, not
+  // on a fixed timer. After `target_max_steps` advances we hold at the last
+  // target indefinitely.
+  int target_step_idx_ = 0;       // current step index in the pattern
+  double dwell_start_t_ = -1.0;   // time we entered the threshold (-1 = no)
+  // Captured on first TransitionLocked call (alongside traj_start_mocap_).
+  // Step pattern rotates this quaternion about world z by ±target_step_rot_deg.
+  double traj_start_mocap_quat_[4] = {1, 0, 0, 0};
 };
 }  // namespace mjpc
 

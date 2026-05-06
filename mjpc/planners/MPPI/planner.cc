@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <shared_mutex>
 
@@ -80,20 +82,19 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
   noise_dc_per_rollout_ =
       GetNumberOrDefault(0.0, model, "sampling_dc_noise") != 0.0;
 
-  // Optional per-actuator std vector. Size must equal model->nu, else cleared
-  // (falls back to legacy ctrlrange-scaled noise).
+  // Optional per-actuator std vector. If size matches model->nu, use it;
+  // otherwise leave empty so AddNoiseToPolicy falls back to ctrlrange-scaled
+  // noise. Mismatched size is silently treated as "disabled" so the same XML
+  // works across stock-MJPC and reference-aligned configurations.
   noise_std_per_joint_.clear();
   int sj_id = mj_name2id(model, mjOBJ_NUMERIC, "sampling_std_per_joint");
   if (sj_id >= 0) {
     int sj_size = model->numeric_size[sj_id];
-    if (sj_size != model->nu) {
-      mju_error_i(
-          "sampling_std_per_joint size mismatch: expected nu=%d entries",
-          model->nu);
+    if (sj_size == model->nu) {
+      int sj_adr = model->numeric_adr[sj_id];
+      noise_std_per_joint_.assign(model->numeric_data + sj_adr,
+                                  model->numeric_data + sj_adr + sj_size);
     }
-    int sj_adr = model->numeric_adr[sj_id];
-    noise_std_per_joint_.assign(model->numeric_data + sj_adr,
-                                model->numeric_data + sj_adr + sj_size);
   }
 
   winner = 0;
@@ -200,21 +201,108 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   policy.plan.SetInterpolation(interpolation_);
   this->Rollouts(num_trajectory, horizon, pool);
 
-  // 최소 비용(Cost) 찾기
-  double min_return_cost = std::numeric_limits<double>::infinity();
+  // ----- per-joint weighting (reference tau-MPPI compute_weights) -----
+  // For each joint j, normalize across rollouts independently using the
+  // per-joint cost stored in trajectory[i].total_return_per_joint[j]. Falls
+  // back to scalar weighting (replicated across joints) if the task did not
+  // override CostValuePerJoint — in that case all joints see the same cost
+  // and per-joint weights coincide with the scalar formulation.
+  int nu = model->nu;
+  std::vector<double> min_return_per_joint(nu,
+      std::numeric_limits<double>::infinity());
   for (int i = 0; i < num_trajectory; ++i) {
-    min_return_cost = std::min(min_return_cost, trajectory[i].total_return);
+    if ((int)trajectory[i].total_return_per_joint.size() != nu) {
+      // Trajectory failed to populate per-joint return; use scalar fallback.
+      for (int j = 0; j < nu; ++j) {
+        min_return_per_joint[j] =
+            std::min(min_return_per_joint[j], trajectory[i].total_return);
+      }
+    } else {
+      for (int j = 0; j < nu; ++j) {
+        min_return_per_joint[j] = std::min(
+            min_return_per_joint[j], trajectory[i].total_return_per_joint[j]);
+      }
+    }
   }
 
-  double sum_weights = 0.0;
+  weights_per_joint.assign(num_trajectory * nu, 0.0);
+  std::vector<double> sum_weights_per_joint(nu, 0.0);
   for (int i = 0; i < num_trajectory; ++i) {
-    double cost_diff = trajectory[i].total_return - min_return_cost;
-    double exponent = -(cost_diff) / mppi_lambda_;
-    weights[i] = std::exp(exponent);
-    sum_weights += weights[i];
+    bool have_pj = (int)trajectory[i].total_return_per_joint.size() == nu;
+    for (int j = 0; j < nu; ++j) {
+      double c =
+          have_pj ? trajectory[i].total_return_per_joint[j]
+                  : trajectory[i].total_return;
+      double w = std::exp(-(c - min_return_per_joint[j]) / mppi_lambda_);
+      weights_per_joint[i * nu + j] = w;
+      sum_weights_per_joint[j] += w;
+    }
+  }
+  for (int j = 0; j < nu; ++j) {
+    if (sum_weights_per_joint[j] > 0.0) {
+      for (int i = 0; i < num_trajectory; ++i) {
+        weights_per_joint[i * nu + j] /= sum_weights_per_joint[j];
+      }
+    }
   }
 
-  for (int i = 0; i < num_trajectory; ++i) weights[i] /= sum_weights;    
+  // Also keep a scalar `weights` view for legacy consumers (visualization,
+  // BestTrajectory). Use joint-0 weights as a representative; tasks where the
+  // hook is not overridden produce identical weights across joints anyway.
+  for (int i = 0; i < num_trajectory; ++i) weights[i] = weights_per_joint[i * nu];
+
+  // Per-joint weight diagnostic: dump ESS_j = 1/sum_i w_{i,j}^2 (effective
+  // sample size, range [1, num_trajectory]) and the per-joint cost spread
+  // (max-min) so we can see whether per-joint weighting is actually
+  // distributing samples differently across joints. Gated by env var
+  // MJPC_MPPI_DEBUG to keep stderr quiet in normal runs.
+  static const bool debug_mppi = []() {
+    const char* e = std::getenv("MJPC_MPPI_DEBUG");
+    return e && std::atoi(e) != 0;
+  }();
+  if (debug_mppi) {
+    static int call_count = 0;
+    static double next_log_time = 0.0;
+    call_count++;
+    if (this->time >= next_log_time) {
+      next_log_time = this->time + 0.1;  // 10 Hz
+      std::vector<double> ess(nu, 0.0);
+      std::vector<double> max_w(nu, 0.0);
+      std::vector<double> spread(nu, 0.0);
+      double max_total = -1e30, min_total = 1e30;
+      for (int j = 0; j < nu; ++j) {
+        double s2 = 0.0;
+        double mw = 0.0;
+        double cmin = 1e30, cmax = -1e30;
+        for (int i = 0; i < num_trajectory; ++i) {
+          double w = weights_per_joint[i * nu + j];
+          s2 += w * w;
+          if (w > mw) mw = w;
+          double c = ((int)trajectory[i].total_return_per_joint.size() == nu)
+                         ? trajectory[i].total_return_per_joint[j]
+                         : trajectory[i].total_return;
+          if (c < cmin) cmin = c;
+          if (c > cmax) cmax = c;
+        }
+        ess[j] = (s2 > 0) ? 1.0 / s2 : 0.0;
+        max_w[j] = mw;
+        spread[j] = cmax - cmin;
+      }
+      for (int i = 0; i < num_trajectory; ++i) {
+        max_total = std::max(max_total, trajectory[i].total_return);
+        min_total = std::min(min_total, trajectory[i].total_return);
+      }
+      std::fprintf(stderr,
+                   "[MPPI t=%.3f] ESS_j=[%5.1f %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f] "
+                   "maxW_j=[%.3f %.3f %.3f %.3f %.3f %.3f %.3f] "
+                   "spread_j=[%6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f] "
+                   "spread_total=%.1f\n",
+                   this->time, ess[0], ess[1], ess[2], ess[3], ess[4], ess[5], ess[6],
+                   max_w[0], max_w[1], max_w[2], max_w[3], max_w[4], max_w[5], max_w[6],
+                   spread[0], spread[1], spread[2], spread[3], spread[4], spread[5],
+                   spread[6], max_total - min_total);
+    }
+  }
 
   { // <-- 잠금 시작
     const std::unique_lock<std::shared_mutex> lock(mtx_);
@@ -229,8 +317,8 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
 
         for (int k = 0; k < model->nu; ++k) {
           double noise = cand_node->values()[k] - pol_node->values()[k];
-          // u <- u + w_i * delta u
-          base_node->values()[k] += weights[i] * noise;
+          // u_k <- u_k + w_{i,k} * delta u_k  (per-joint weight)
+          base_node->values()[k] += weights_per_joint[i * nu + k] * noise;
         }
       }
     }

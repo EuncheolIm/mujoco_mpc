@@ -3,38 +3,69 @@
 
   <!-- nuserdata reserves slots in mjData->userdata for sharing between
        TransitionLocked (writes) and the cost functions (read).
-       Layout: [0..2] = traj_final_mocap_ (xyz), [3] = hybrid_active flag. -->
-  <size memory="1M" nuserdata="4"/>
+       Layout: [0..2] = traj_final_mocap_ (xyz), [3] = hybrid_active flag,
+       [4] = absolute time hybrid first activated (used by CostPressZ to lerp
+             virtual_z from approach target down to press_z_target). -1 means
+             hybrid not yet on. -->
+  <size memory="1M" nuserdata="5"/>
 
   <custom>
     <numeric name="agent_planner" data="0" />
-    <!-- <numeric name="agent_horizon" data="0.2" />  
-    <numeric name="agent_timestep" data="0.01" /> -->
 
-    <!-- horizon/dt match reference tau-MPPI: T=40 steps, dt=0.01 -->
-    <!-- dt was changed from 0.003 to 0.01 caused by the change in agent_timestep and for safety -->
-    <numeric name="agent_horizon" data="0.12" />
+    <!-- ===== MJPC-style sampling (post-reference-parity) =====
+         Reference-aligned config (T=40 zero-spline knots, dt=0.003,
+         dc_noise=1, raw sigma {2,2,2,2,1,1,1}) is preserved on a separate
+         git branch. Here we adopt MJPC's stock sampling scheme: longer
+         horizon, fewer cubic knots, per-knot independent Gaussian, and
+         ctrlrange-scaled sigma. Hyperparameters (lambda / exploration /
+         cost weight scale) are tuned together below. -->
+    <numeric name="agent_horizon" data="0.2" />
     <numeric name="agent_timestep" data="0.01" />
 
     <numeric name="agent_policy_width" data="0.0035" />
     <numeric name="sampling_trajectories" data="128"/>
-    <!-- Dense per-step control: 40 zero-spline knots over the horizon. -->
-    <numeric name="sampling_spline_points" data="40" />
-    <!-- 0=Zero, 1=Linear, 2=Cubic, 3=Bezier. Reference uses dense per-step (Zero). -->
-    <numeric name="sampling_representation" data="0" />
-    <!-- Global multiplier on per-joint sigma (reference uses raw sigma -> 1.0). -->
-    <numeric name="sampling_exploration" data="1.0" />
-    <!-- MPPI temperature: matches reference _lambda = 1.0. -->
-    <numeric name="sampling_lambda" data="0.1" />
-    <!-- DC noise (one offset per rollout-joint, broadcast to all knots). -->
-    <numeric name="sampling_dc_noise" data="1" />
-    <!-- Per-joint sigma in N*m, matches reference _sigma = {2,2,2,2,1,1,1}. -->
-    <numeric name="sampling_std_per_joint" size="7" data="2 2 2 2 1 1 1" />
+    <!-- Stage-1 best (4D sweep, 5-seed verified): knots=2, Linear, lambda=1,
+         exploration=0.05, jc=100. L1_settled_med = 0.051 rad (≈3°). -->
+    <numeric name="sampling_spline_points" data="2" />
+    <numeric name="sampling_representation" data="1" />
+    <!-- Exploration scales the (ctrlrange/2)-based sigma. With ctrlrange
+         ±87 N*m for FR3 actuators, exploration=0.05 -> sigma ≈ 4.35 N*m
+         per joint. Tune. -->
+    <numeric name="sampling_exploration" data="0.02" />
+    <!-- MPPI temperature. Tune in concert with cost-weight magnitude. -->
+    <numeric name="sampling_lambda" data="1.0" />
+    <!-- Independent Gaussian per knot (stock MJPC). -->
+    <numeric name="sampling_dc_noise" data="0" />
+    <!-- Per-joint sigma override DISABLED (size!=nu means fallback to
+         ctrlrange-based sigma in AddNoiseToPolicy). -->
+    <numeric name="sampling_std_per_joint" size="1" data="0" />
     <numeric name="gradient_spline_points" data="6" />
     <!-- // =============== EC =============== // -->
     <!-- WIP CHUNK 3: force-control numerics -->
     <numeric name="F_des" size="3" data="0 0 -10"/>
     <numeric name="approach_time"    data="2.0"/>
+    <!-- Stage-2 reach test: lock mocap to robot's home EE position (skip
+         approach lerp). Robot should hold its initial EE pose against the
+         q_mid pull from joint_cent. Set 0 to restore normal lerp. -->
+    <numeric name="home_lock_mocap" data="1"/>
+    <!-- Residual normalization: residual = drift / scale, so the same
+         `weight` value applies equally to position and orientation cost.
+         pos_scale = 10 cm; ori_scale = 5 deg = 0.0873 rad. -->
+    <numeric name="reach_pos_scale" data="0.1"/>
+    <numeric name="reach_ori_scale" data="0.0873"/>
+    <!-- Moving target overlay (only active when home_lock_mocap=1).
+         0=static, 1=circle xy, 2=step xy, 3=ramp x. -->
+    <!-- Event-based step pattern. Robot dwells at each target until EE is
+         within `target_advance_threshold` for `target_dwell_time` continuous
+         seconds, then advances. Step 0 = home (initial reach). Steps 1..max
+         = 4-corner square ±radius in xy around home. -->
+    <numeric name="target_step_enable"        data="0"/>
+    <numeric name="target_step_radius"        data="0.07"/>
+    <numeric name="target_step_rot_deg"       data="15.0"/>
+    <numeric name="target_advance_threshold"  data="0.005"/>
+    <numeric name="target_advance_ori_thresh" data="0.0873"/>
+    <numeric name="target_dwell_time"         data="0.5"/>
+    <numeric name="target_max_steps"          data="4"/>
     <!-- Goal-reach criterion for switching from approach -> hybrid:
          EE site within `hybrid_switch_dist` (m) AND
          orientation axis-angle error < `hybrid_switch_angle` (rad).
@@ -42,6 +73,56 @@
     <numeric name="hybrid_switch_dist"  data="0.02"/>
     <numeric name="hybrid_switch_angle" data="0.087"/>  <!-- ~5 deg -->
     <numeric name="hybrid_switch_delay" data="0.5"/>
+    <!-- xy force regulation toggle: 0 = off (z-only), 1 = on (regulate F_x, F_y -> 0). -->
+    <numeric name="force_xy_regulation" data="1"/>
+
+    <!-- Force-track asymmetry. err = F_des - F_press_world_z.
+         residual = err if err<0 (undershoot), r*err if err>0 (overshoot).
+         Effective overshoot weight is r^2 * undershoot weight.
+         r=0 pure asymmetric, r=1 pure symmetric, 0.3 mild pull toward F_des. -->
+    <numeric name="force_overshoot_ratio" data="1.0"/>
+    <!-- EE total weight (N) used to remove gravity bias from hand_force
+         sensor. Default 7.46 = (0.73 hand + 2*0.015 finger) * 9.81.
+         Override here if panda hand mass differs. -->
+    <numeric name="ee_weight_N" data="7.46"/>
+    <numeric name="force_track_cap" data="20.0"/>
+
+    <!-- Manipulability barrier threshold. residual = max(0, manip_min - w(q))
+         where w = sqrt(det(J*J^T)). Tune by reading observed w in steady
+         press states; set manip_min just above the regime where lift bug
+         occurs. -->
+    <numeric name="manip_min" data="0.0"/>
+
+    <!-- Impedance press parameters (paper-aligned).
+         press_z_target: virtual setpoint below the table top (m). Steady
+           penetration at table top (z=0.30) gives press force ≈
+           2 * Press_z_weight * (0.30 - press_z_target). With weight 1000 and
+           target 0.295 (5 mm below), implied force ≈ 10 N.
+         press_lerp_time: smooth lerp from approach z target to press_z_target
+           after hybrid activation, to avoid step-input contact spikes. -->
+    <numeric name="press_z_target"  data="0.295"/>
+    <numeric name="press_z_lift_thresh" data="0.315"/>
+    <numeric name="press_lerp_time" data="0.5"/>
+
+    <!-- Wiping/polishing motion. Sequence:
+           1) approach completes
+           2) hybrid mode activates (geometric reach + delay)
+           3) F_press_world_z < contact_threshold -> contact confirmed
+           4) wait wipe_delay seconds
+           5) mocap (x,y) moves along circle of wipe_radius, period wipe_period
+         z is untouched so contact depth is maintained. wipe_enable=0 for
+         pure press (no wiping). contact_threshold is in N (negative = press). -->
+    <numeric name="wipe_enable"        data="0"/>
+    <!-- Contact criterion: BOTH must hold (AND).
+         contact_z_thresh: EE site z below this (m). Table top z=0.3 so
+           default 0.31 means "EE within 1cm of table top".
+         contact_threshold: F_press_world_z below this (N, negative=press).
+           Default -1.0 = pressing at least 1 N down. -->
+    <numeric name="contact_z_thresh"   data="0.31"/>
+    <numeric name="contact_threshold"  data="-1.0"/>
+    <numeric name="wipe_delay"         data="1.0"/>
+    <numeric name="wipe_radius"        data="0.05"/>
+    <numeric name="wipe_period"        data="5.0"/>
     <!-- // ================================== // -->
   </custom>
 
@@ -71,11 +152,14 @@
         directional="true" castshadow="true"/>
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
 
-    <!-- WIP CHUNK 1: table body -->
+    <!-- Table. solref=0.004 1 (4× softer than default 0.001) follows
+         MJPC manipulation/task_panda_bring object-side practice and tames
+         the sub-step contact transients we observed in the stiff-default
+         configuration. -->
     <body name="table" pos="0.55 0.1 0.1">
       <geom name="table_top" type="box" size="0.2 0.8 0.2"
             rgba="0.55 0.35 0.18 1" friction="0.5 0.005 0.0001"
-            contype="1" conaffinity="1"/>
+            contype="1" conaffinity="1" solref="0.004 1"/>
     </body>
 
     <!-- <body name="target" mocap="true" pos="0.6 0.4 0.05">
@@ -146,29 +230,36 @@
   </keyframe>
 
   <sensor>
-  <!-- user format: "type, weight, weight_lower, weight_upper, p_smooth"
-       Final cost = weight * sum(residual^2). Weights below match reference
-       tau-MPPI: Q_p=1e6, Q_o=5e4, qdot=500, null=1000, plus a soft hinge that
-       approximates the reference's hard penalty on velocity / joint limits.
+  <!-- ==== Stage-2: EE position tracking ====
+       Sampling fixed at Stage-1 best. Reach_pos active (sweep weight),
+       Reach_ori still off. mocap is locked to robot's initial EE pos via
+       <numeric name="home_lock_mocap" data="1"/>, so the target is whatever
+       EE position results from the home keyframe pose. With jc=100 still
+       pulling toward q_mid, this is a 7-DoF redundancy contest.
   -->
-    <!-- EE position tracking (Q_p = 1e6) -->
-    <user name="Reach_pos" dim="3" user="2 1000000 0 5000000 0.01"/>
-    <!-- EE orientation tracking (Q_o = 5e4) -->
-    <user name="Reach_ori" dim="3" user="2 50000 0 500000 0.01"/>
+    <!-- After residual normalization (residual = drift / scale), same weight
+         applies to both. SWEEP weight {1, 3, 10, 30, 100, 300}. -->
+    <user name="Reach_pos" dim="3" user="2 1000 0 50000 0.01"/>
+    <user name="Press_z"   dim="1" user="2 0 0 100 0.01"/>
+    <user name="Reach_ori" dim="3" user="2 1000 0 50000 0.01"/>
 
-    <!-- Joint centering (reference: 1000 * (q - q_mid)^2). Residual is the
-         null-space projection of (q - q_mid), so task-aligned components don't
-         fight the reach term. -->
-    <user name="joint_cent" dim="7" user="2 1000 0 5000 1"/>
+    <!-- Joint centering toward jnt_range midpoint (Stage-1 best). -->
+    <user name="joint_cent" dim="7" user="2 100 0 1000 1"/>
 
-    <!-- Joint velocity penalty (reference: 500 * qdot^2 + 1e7 if violated).
-         CostJointVelocity emits |qdot| + 10*excess so squared cost grows
-         steeply past the limit, approximating the reference's hard penalty. -->
-    <user name="joint_vel_penalty" dim="7" user="2 500 0 5000 0.01"/>
+    <!-- Joint velocity hard hinge: residual = max(0, |qdot| - limit).
+         Large weight = stiff barrier. -->
+    <user name="joint_vel_penalty" dim="7" user="2 100000 0 1000000 0.01"/>
 
-    <!-- WIP CHUNK 3: force tracking weight (bumped 10x for stronger pull) -->
-    <user name="EE_Force" dim="3" user="2 30 0 100 1"/>
-    <user name="u_reg" dim="7" user="2 0.01 0 1 0.01"/>
+    <!-- Joint position limit hard hinge near jnt_range bounds.
+         Large weight = stiff barrier. -->
+    <user name="joint_pos_limit" dim="7" user="2 100000 0 1000000 1"/>
+
+    <user name="EE_Force_track" dim="1" user="2 0 0 1 1"/>
+    <user name="EE_Force_reg"   dim="2" user="2 0 0 0.1 1"/>
+    <user name="u_reg" dim="7" user="2 0 0 0.1 0.01"/>
+
+    <user name="manip_barrier" dim="1" user="2 0 0 10 1"/>
+    <user name="ee_z_vel_damp" dim="1" user="2 0 0 10 1"/>
 
     <framepos name="hand" objtype="site" objname="hand_site"/>
     <framequat name="hand_orient" objtype="site" objname="hand_site"/>
@@ -184,4 +275,19 @@
 
   <!-- modified from: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda -->
   <include file="panda_modified.xml"/>
+
+  <!-- Contact + numerical-stability options adopted from MJPC's
+       manipulation/task_panda_bring (the in-tree pick-and-place benchmark).
+       Placed AFTER the panda include so this <option> wins the merge over
+       panda_modified.xml's own timestep=0.002 (MuJoCo merges with last-write
+       priority per attribute):
+         timestep=0.001     1 kHz sim → finer resolution of contact transients
+         cone="elliptic"    smoother / more accurate friction cone
+         integrator="implicit"  stable for stiff contact dynamics
+         flag multiccd      multiple contact points per geom pair (e.g. both
+                            fingers touching the table) so reaction force is
+                            distributed instead of all going through one point. -->
+  <option timestep="0.001" cone="elliptic" integrator="implicit">
+    <flag multiccd="enable"/>
+  </option>
 </mujoco>
