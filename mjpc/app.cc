@@ -382,6 +382,15 @@ void PhysicsLoop(mj::Simulate& sim) {
         sim.agent->state.Set(m, d);
       }
     }
+
+    // Auto-exit after sim time exceeds MJPC_AUTOEXIT seconds.
+    static const double autoexit_t = []() {
+      const char* e = std::getenv("MJPC_AUTOEXIT");
+      return (e && std::atof(e) > 0.0) ? std::atof(e) : -1.0;
+    }();
+    if (d && autoexit_t > 0.0 && d->time >= autoexit_t) {
+      sim.exitrequest.store(true);
+    }
   }
 }
 }  // namespace
@@ -452,9 +461,15 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
   sim->delete_old_m_d = true;
   sim->loadrequest = 2;
 
-  // Start paused so the user can inspect the initial pose / target before
-  // the controller engages. Toggle with the spacebar in the viewer.
-  sim->run = 0;
+  // Auto-start with planner + action enabled when MJPC_AUTORUN is set
+  // (any non-zero or unset). Set MJPC_AUTORUN=0 to start paused.
+  const char* autorun = std::getenv("MJPC_AUTORUN");
+  bool autorun_on = autorun && std::atoi(autorun) != 0;
+  sim->run = autorun_on ? 1 : 0;
+  if (autorun_on) {
+    sim->agent->plan_enabled = true;
+    sim->agent->action_enabled = true;
+  }
 
   sim->ui0_enable = absl::GetFlag(FLAGS_show_left_ui);
   sim->info = absl::GetFlag(FLAGS_show_info);

@@ -14,6 +14,7 @@
 
 #include "mjpc/tasks/Fr3/fr3.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -64,7 +65,9 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
     const char* path = std::getenv("MJPC_FORCE_LOG");
     if (path && path[0]) {
       csv_file = std::fopen(path, "w");
-      if (csv_file) std::fprintf(csv_file, "time,Fx,Fy,Fz\n");
+      if (csv_file) std::fprintf(csv_file,
+          "time,Fx,Fy,Fz,F_task_z,"
+          "ee_x,ee_y,ee_z,tgt_x,tgt_y,tgt_z,hybrid\n");
     }
     csv_inited = true;
   }
@@ -85,16 +88,30 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
       for (int i = 0; i < 7; i++) tau_ext[i] = data->ctrl[i] - data->qfrc_bias[i];
       double F_task[6];
       mju_mulMatVec(F_task, JdynT, tau_ext, 6, 7);
-      F_task_z = F_task[2];
+      F_task_z = std::isfinite(F_task[2]) ? F_task[2] : 0.0;
     }
 
     if (F) {
+      // Read EE position via "hand" sensor and mocap target via
+      // "hand_target" sensor for the position-tracking plot.
+      double ee_x = 0, ee_y = 0, ee_z = 0;
+      double tgt_x = 0, tgt_y = 0, tgt_z = 0;
+      double* hand = SensorByName(model, data, "hand");
+      double* tgt  = SensorByName(model, data, "hand_target");
+      if (hand) { ee_x = hand[0]; ee_y = hand[1]; ee_z = hand[2]; }
+      if (tgt)  { tgt_x = tgt[0]; tgt_y = tgt[1]; tgt_z = tgt[2]; }
+      int hybrid = (model->nuserdata >= 4 &&
+                    data->userdata[3] >= 0.5) ? 1 : 0;
       std::fprintf(stderr,
-                   "[t=%6.3f] F_sensor=(%7.2f,%7.2f,%7.2f) F_task_z=%7.2f N\n",
-                   data->time, F[0], F[1], F[2], F_task_z);
+                   "[t=%6.3f] F_sensor=(%7.2f,%7.2f,%7.2f) F_task_z=%7.2f N "
+                   "ee=(%.3f,%.3f,%.3f) hyb=%d\n",
+                   data->time, F[0], F[1], F[2], F_task_z,
+                   ee_x, ee_y, ee_z, hybrid);
       if (csv_file) {
-        std::fprintf(csv_file, "%.4f,%.4f,%.4f,%.4f,%.4f\n",
-                     data->time, F[0], F[1], F[2], F_task_z);
+        std::fprintf(csv_file,
+                     "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d\n",
+                     data->time, F[0], F[1], F[2], F_task_z,
+                     ee_x, ee_y, ee_z, tgt_x, tgt_y, tgt_z, hybrid);
         std::fflush(csv_file);
       }
     }
@@ -113,8 +130,8 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
   if (!traj_init_ || data->time < traj_t0_) {
     traj_t0_ = data->time;
     traj_reach_time_ = -1.0;
-    if (model->nuserdata >= 4) data->userdata[3] = 0.0;
-    for (int i = 0; i < 3; i++) traj_final_mocap_[i] = data->mocap_pos[i];
+    // Start directly in hybrid mode — no approach phase / mode switch.
+    if (model->nuserdata >= 4) data->userdata[3] = 1.0;
 
     int site_id = mj_name2id(model, mjOBJ_SITE, "hand_site");
     if (site_id >= 0) {
@@ -126,8 +143,34 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
       traj_start_mocap_[0] = xp[0];
       traj_start_mocap_[1] = xp[1];
       traj_start_mocap_[2] = xp[2] + 0.1034;
+      // Target = EE pose at home keyframe: no approach motion, EE just holds.
+      for (int i = 0; i < 3; i++) traj_final_mocap_[i] = traj_start_mocap_[i];
+      // Optional overrides: MJPC_TARGET_X/Y/Z set the GOAL EE position
+      // (world frame). mocap_z = ee_z + 0.1034 due to hand_copy quat flip.
+      if (const char* tx = std::getenv("MJPC_TARGET_X")) {
+        traj_final_mocap_[0] = std::atof(tx);
+      }
+      if (const char* ty = std::getenv("MJPC_TARGET_Y")) {
+        traj_final_mocap_[1] = std::atof(ty);
+      }
+      if (const char* tz = std::getenv("MJPC_TARGET_Z")) {
+        traj_final_mocap_[2] = std::atof(tz) + 0.1034;
+      }
+      data->mocap_pos[0] = traj_start_mocap_[0];
+      data->mocap_pos[1] = traj_start_mocap_[1];
+      data->mocap_pos[2] = traj_start_mocap_[2];
+      // Match mocap orientation to hand_site orientation at home so the
+      // target pose (position + orientation) equals the home EE pose.
+      const double* R = data->site_xmat + 9 * site_id;
+      double ee_quat[4];
+      mju_mat2Quat(ee_quat, R);
+      data->mocap_quat[0] = ee_quat[0];
+      data->mocap_quat[1] = ee_quat[1];
+      data->mocap_quat[2] = ee_quat[2];
+      data->mocap_quat[3] = ee_quat[3];
     } else {
-      for (int i = 0; i < 3; i++) traj_start_mocap_[i] = traj_final_mocap_[i];
+      for (int i = 0; i < 3; i++) traj_start_mocap_[i] = data->mocap_pos[i];
+      for (int i = 0; i < 3; i++) traj_final_mocap_[i] = traj_start_mocap_[i];
     }
     traj_init_ = true;
   }

@@ -13,7 +13,7 @@
 
     <!-- horizon/dt match reference tau-MPPI: T=40 steps, dt=0.01 -->
     <!-- dt was changed from 0.003 to 0.01 caused by the change in agent_timestep and for safety -->
-    <numeric name="agent_horizon" data="0.12" />
+    <numeric name="agent_horizon" data="0.3" />
     <numeric name="agent_timestep" data="0.01" />
 
     <numeric name="agent_policy_width" data="0.0035" />
@@ -25,6 +25,7 @@
     <!-- Global multiplier on per-joint sigma (reference uses raw sigma -> 1.0). -->
     <numeric name="sampling_exploration" data="1.0" />
     <!-- MPPI temperature: matches reference _lambda = 1.0. -->
+    <!-- λ = 0.1/13 to compensate mjpc's cost-averaging over horizon=13. -->
     <numeric name="sampling_lambda" data="0.1" />
     <!-- DC noise (one offset per rollout-joint, broadcast to all knots). -->
     <numeric name="sampling_dc_noise" data="1" />
@@ -34,6 +35,11 @@
     <!-- // =============== EC =============== // -->
     <!-- WIP CHUNK 3: force-control numerics -->
     <numeric name="F_des" size="3" data="0 0 -10"/>
+    <!-- Subtree weight of hand_site's parent body: hand (0.73) + two
+         fingers (0.015 each) = 0.76 kg → 7.46 N. Used to remove the
+         gravity bias from the hand_force sensor when computing
+         F_press_z. Retune if the EE assembly changes. -->
+    <numeric name="ee_weight_N" data="7.46"/>
     <numeric name="approach_time"    data="2.0"/>
     <!-- Goal-reach criterion for switching from approach -> hybrid:
          EE site within `hybrid_switch_dist` (m) AND
@@ -71,12 +77,25 @@
         directional="true" castshadow="true"/>
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
 
-    <!-- WIP CHUNK 1: table body -->
-    <body name="table" pos="0.55 0.1 0.1">
-      <geom name="table_top" type="box" size="0.2 0.8 0.2"
-            rgba="0.55 0.35 0.18 1" friction="0.5 0.005 0.0001"
-            contype="1" conaffinity="1"/>
+    <!-- Table matched to reference scene_table.xml (used by MPPI_tau.cu):
+         body @ (0.45, 0, 0), top geom at body-local (0,0,0.28) with size
+         0.30 × 0.35 × 0.02 → top surface world z = 0.30. friction 1.0,
+         soft contact (solref 0.04 / solimp 0.9 0.99 0.001), condim 3. -->
+    <body name="table" pos="0.45 0.0 0.0">
+      <geom name="table_top" type="box" pos="0 0 0.28" size="0.30 0.35 0.02"
+            rgba="0.55 0.35 0.18 1" friction="1 0.005 0.0001"
+            contype="1" conaffinity="1"
+            condim="3" solimp="0.9 0.99 0.001" solref="0.04 1"/>
+      <geom name="leg_fl" type="cylinder" pos=" 0.25  0.30 0.13" size="0.02 0.13"
+            rgba="0.4 0.25 0.12 1" contype="0" conaffinity="0"/>
+      <geom name="leg_fr" type="cylinder" pos=" 0.25 -0.30 0.13" size="0.02 0.13"
+            rgba="0.4 0.25 0.12 1" contype="0" conaffinity="0"/>
+      <geom name="leg_bl" type="cylinder" pos="-0.25  0.30 0.13" size="0.02 0.13"
+            rgba="0.4 0.25 0.12 1" contype="0" conaffinity="0"/>
+      <geom name="leg_br" type="cylinder" pos="-0.25 -0.30 0.13" size="0.02 0.13"
+            rgba="0.4 0.25 0.12 1" contype="0" conaffinity="0"/>
     </body>
+
 
     <!-- <body name="target" mocap="true" pos="0.6 0.4 0.05">
       <geom name="target"  type="box" size="0.02 0.03 0.02" contype="0" conaffinity="0" rgba=".5 .5 .5 .3"/>
@@ -142,7 +161,7 @@
     <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188 0.005 0.005"/>
      -->
      <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188"/> -->
-     <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853  "/>
+     <key name="home" qpos="0 0 0 -1.57079 0 1.57079 0"/>
   </keyframe>
 
   <sensor>
@@ -151,24 +170,23 @@
        tau-MPPI: Q_p=1e6, Q_o=5e4, qdot=500, null=1000, plus a soft hinge that
        approximates the reference's hard penalty on velocity / joint limits.
   -->
-    <!-- EE position tracking (Q_p = 1e6) -->
-    <user name="Reach_pos" dim="3" user="2 1000000 0 5000000 0.01"/>
-    <!-- EE orientation tracking (Q_o = 5e4) -->
-    <user name="Reach_ori" dim="3" user="2 50000 0 500000 0.01"/>
-
-    <!-- Joint centering (reference: 1000 * (q - q_mid)^2). Residual is the
-         null-space projection of (q - q_mid), so task-aligned components don't
-         fight the reach term. -->
-    <user name="joint_cent" dim="7" user="2 1000 0 5000 1"/>
-
-    <!-- Joint velocity penalty (reference: 500 * qdot^2 + 1e7 if violated).
-         CostJointVelocity emits |qdot| + 10*excess so squared cost grows
-         steeply past the limit, approximating the reference's hard penalty. -->
-    <user name="joint_vel_penalty" dim="7" user="2 500 0 5000 0.01"/>
-
-    <!-- WIP CHUNK 3: force tracking weight (bumped 10x for stronger pull) -->
-    <user name="EE_Force" dim="3" user="2 30 0 100 1"/>
-    <user name="u_reg" dim="7" user="2 0.01 0 1 0.01"/>
+    <!-- Match reference MPPI_tau.cu raw quadratic costs.
+         mjpc kQuadratic (norm_type=0) is 0.5·‖x‖², so weight = 2·Q to
+         align with reference's   cost = Q·‖x‖²   and gradient = 2Q·x.
+           Reference Q       →   mjpc weight (= 2·Q)
+           Q_p   = 1e6              2e6     (Reach_pos)
+           Q_o   = 5e4              1e5     (Reach_ori)
+           null  = 1000             2000    (joint_cent)
+           qdot  = 500              1000    (joint_vel)
+           Force = 10               20      (EE_Force)
+         The 5th xml number is the Norm parameter; for kQuadratic it is
+         unused (kept at the previous values for compatibility). -->
+    <user name="Reach_pos"         dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Reach_ori"         dim="3" user="2 50000   0 500000   0.01"/>
+    <user name="joint_cent"        dim="7" user="2 1000    0 5000     1"/>
+    <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>
+    <user name="EE_Force"          dim="3" user="2 30      0 100      1"/>
+    <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
 
     <framepos name="hand" objtype="site" objname="hand_site"/>
     <framequat name="hand_orient" objtype="site" objname="hand_site"/>

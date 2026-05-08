@@ -25,15 +25,8 @@ namespace mjpc::fr3 {
 
 namespace {
 
-// Binary phase flag set by FR3::TransitionLocked into data->userdata[3]:
-//   0 -> approach phase: full 6D position cost,         force cost OFF
-//   1 -> hybrid  phase: xy + ori position cost (z OFF), z force cost ON
-// The flag latches on once the EE first reaches the final goal — we never
-// fall back to position-only after contact, even if EE bounces away.
-bool HybridActive(const mjModel* model, const mjData* data) {
-  if (model->nuserdata < 4) return false;
-  return data->userdata[3] >= 0.5;
-}
+// (HybridActive removed — costs are now always active, matching the
+//  reference MPPI_tau.cu structure.)
 
 }  // namespace
 
@@ -42,9 +35,12 @@ int CostPosition(const mjModel* model, const mjData* data, double* residual) {
   double* hand = SensorByName(model, data, "hand");
   double* target = SensorByName(model, data, "hand_target");
 
+  // Match reference MPPI_tau.cu: position cost is always xy-only.
+  // Reference loops `for(l=0; l<2; l++) cost_pos_l += Q_p · err²`. z
+  // residual is always 0 (z is delegated to CostForce).
   residual[0] = hand[0] - target[0];
   residual[1] = hand[1] - target[1];
-  residual[2] = HybridActive(model, data) ? 0.0 : (hand[2] - target[2]);
+  residual[2] = 0.0;
   return 3;
 }
 
@@ -109,21 +105,55 @@ int CostJointVelocity(const mjModel* model, const mjData* data,
 }
 
 int CostForce(const mjModel* model, const mjData* data, double* residual) {
-  // Approach phase: force cost = 0. Hybrid phase: track F_des on z only.
-  // Uses the contact force directly from the "hand_force" sensor (EE frame).
+  // Two force-tracking signals are computed below:
+  //   1) F_press_z = (R · F_sensor)_z − m·g  — actual contact reaction force
+  //                                            (lives only when contact occurs)
+  //   2) F_task   = J#^T · (τ − qfrc_bias)   — operational-space "intent"
+  //                                            wrench (lives even free-space)
+  // The residual line at the end picks which one is used. F_press_z is kept
+  // as the default to avoid the divergence from F_task’s unreachable −10 N
+  // set point in free space.
   residual[0] = 0.0;
   residual[1] = 0.0;
   residual[2] = 0.0;
 
-  if (!HybridActive(model, data)) return 3;
+  if (model->nv < 7) return 3;
 
+  // (1) F_press_z: gravity-bias-removed real reaction force.
   double* F_sensor = SensorByName(model, data, "hand_force");
   if (!F_sensor) return 3;
+  int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
+  if (sid < 0) return 3;
+  const double* R = data->site_xmat + 9 * sid;
+  double F_world_z = R[6] * F_sensor[0] + R[7] * F_sensor[1] + R[8] * F_sensor[2];
+  double mg = mjpc::GetNumberOrDefault(7.46, model, "ee_weight_N");
+  double F_press_z = F_world_z - mg;
+
+  // (2) F_task: intent wrench from the dynamically-consistent Jacobian.
+  double jacp[3 * 7], jacr[3 * 7];
+  GetHandManipulatorJacobian(model, data, jacp, jacr);
+  double M[49];
+  GetInertiaMatrix(model, data, M);
+  double JdynT[6 * 7];
+  GetDynamicallyConsistentJacobianT_FromM(model, jacp, jacr, M, JdynT);
+  double tau_ext[7];
+  for (int i = 0; i < 7; i++) {
+    tau_ext[i] = data->ctrl[i] - data->qfrc_bias[i];
+  }
+  double F_task[6];
+  mju_mulMatVec(F_task, JdynT, tau_ext, 6, 7);
+  // Guard: if M / J# computation degenerated (singular config or qM not yet
+  // populated), fall back to 0 so residual stays finite. NaN here would
+  // poison MPPI softmax via NaN costs.
+  if (!std::isfinite(F_task[2])) F_task[2] = 0.0;
 
   int id = mj_name2id(model, mjOBJ_NUMERIC, "F_des");
   const double* F_des = model->numeric_data + model->numeric_adr[id];
 
-  residual[2] = F_des[2] - F_sensor[2];
+  // Pick the active signal here:
+  residual[2] = F_des[2] - F_task[2];
+  // residual[2] = F_des[2] - F_press_z;
+  (void)F_press_z;
   return 3;
 }
 
