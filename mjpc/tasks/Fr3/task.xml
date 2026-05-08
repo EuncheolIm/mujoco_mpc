@@ -4,7 +4,7 @@
   <!-- nuserdata reserves slots in mjData->userdata for sharing between
        TransitionLocked (writes) and the cost functions (read).
        Layout: [0..2] = traj_final_mocap_ (xyz), [3] = hybrid_active flag. -->
-  <size memory="1M" nuserdata="4"/>
+  <size memory="1M" nuserdata="5"/>
 
   <custom>
     <numeric name="agent_planner" data="0" />

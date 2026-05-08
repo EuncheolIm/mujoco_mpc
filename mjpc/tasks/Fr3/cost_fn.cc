@@ -31,15 +31,30 @@ namespace {
 }  // namespace
 
 int CostPosition(const mjModel* model, const mjData* data, double* residual) {
-  // Approach phase: full 3D position track. Hybrid phase: x,y only (z = 0).
+  // Hybrid xy tracking. Default target = hand_target sensor (mocap-based).
+  // During wipe phase (userdata[4] >= 0), recompute the target analytically
+  // from (center = userdata[0..2], data->time − userdata[4]) so MPPI sees a
+  // time-varying reference within the rollout horizon, not a frozen one.
   double* hand = SensorByName(model, data, "hand");
-  double* target = SensorByName(model, data, "hand_target");
+  double* sensor_target = SensorByName(model, data, "hand_target");
+  double tx = sensor_target[0];
+  double ty = sensor_target[1];
 
-  // Match reference MPPI_tau.cu: position cost is always xy-only.
-  // Reference loops `for(l=0; l<2; l++) cost_pos_l += Q_p · err²`. z
-  // residual is always 0 (z is delegated to CostForce).
-  residual[0] = hand[0] - target[0];
-  residual[1] = hand[1] - target[1];
+  if (model->nuserdata >= 5 && data->userdata[4] >= 0.0) {
+    double rx  = mjpc::GetNumberOrDefault(0.05, model, "wipe_radius_x");
+    double ry  = mjpc::GetNumberOrDefault(0.05, model, "wipe_radius_y");
+    double T   = mjpc::GetNumberOrDefault(4.0, model, "wipe_period");
+    double phy = mjpc::GetNumberOrDefault(1.5707963, model, "wipe_phase_y");
+    if (T > 1e-6) {
+      double t_w = data->time - data->userdata[4];
+      double w = 2.0 * 3.14159265358979 / T;
+      tx = data->userdata[0] + rx * std::cos(w * t_w);
+      ty = data->userdata[1] + ry * std::sin(w * t_w + phy);
+    }
+  }
+
+  residual[0] = hand[0] - tx;
+  residual[1] = hand[1] - ty;
   residual[2] = 0.0;
   return 3;
 }

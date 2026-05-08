@@ -132,6 +132,8 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
     traj_reach_time_ = -1.0;
     // Start directly in hybrid mode — no approach phase / mode switch.
     if (model->nuserdata >= 4) data->userdata[3] = 1.0;
+    // userdata[4] = wipe origin time. -1 = wipe not started.
+    if (model->nuserdata >= 5) data->userdata[4] = -1.0;
 
     int site_id = mj_name2id(model, mjOBJ_SITE, "hand_site");
     if (site_id >= 0) {
@@ -182,6 +184,36 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
     for (int i = 0; i < 3; i++) {
       data->mocap_pos[i] = traj_start_mocap_[i] +
                            s * (traj_final_mocap_[i] - traj_start_mocap_[i]);
+    }
+  }
+
+  // Wiping (polishing) phase: after approach + stabilize_delay, drive a
+  // closed xy pattern around traj_final_mocap_.xy. z target stays at the
+  // approach goal — force cost holds contact depth, position-xy cost slides
+  // the EE in a circle/lissajous. Tunables (XML numerics, fall back to
+  // env vars, default in code):
+  //   wipe_stabilize  — sec after approach end before wipe begins (1.5s)
+  //   wipe_radius_x/y — half-axis lengths in meters (0.05, 0.05)
+  //   wipe_period     — seconds for one full cycle (4.0s)
+  //   wipe_phase_y    — y phase offset (rad), pi/2 → circle, 0 → line (pi/2)
+  double wipe_stab    = GetNumberOrDefault(1.5, model, "wipe_stabilize");
+  double wipe_rx      = GetNumberOrDefault(0.05, model, "wipe_radius_x");
+  double wipe_ry      = GetNumberOrDefault(0.05, model, "wipe_radius_y");
+  double wipe_period  = GetNumberOrDefault(4.0, model, "wipe_period");
+  double wipe_phase_y = GetNumberOrDefault(1.5707963, model, "wipe_phase_y");
+  double t_post = t_traj - approach_time;
+  if (t_post > wipe_stab && wipe_period > 1e-6) {
+    double t_w = t_post - wipe_stab;
+    double w = 2.0 * 3.14159265358979 / wipe_period;
+    data->mocap_pos[0] = traj_final_mocap_[0] + wipe_rx * std::cos(w * t_w);
+    data->mocap_pos[1] = traj_final_mocap_[1] +
+                         wipe_ry * std::sin(w * t_w + wipe_phase_y);
+    // z stays at traj_final_mocap_[2] (force cost owns z anyway).
+    data->mocap_pos[2] = traj_final_mocap_[2];
+    // Publish wipe origin time so CostPosition can reconstruct the
+    // time-varying target inside MPPI rollouts.
+    if (model->nuserdata >= 5 && data->userdata[4] < 0.0) {
+      data->userdata[4] = traj_t0_ + approach_time + wipe_stab;
     }
   }
 
