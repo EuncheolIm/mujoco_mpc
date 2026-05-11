@@ -8,18 +8,19 @@
 
   <custom>
     <numeric name="agent_planner" data="0" />
-    <!-- <numeric name="agent_horizon" data="0.2" />  
+    <!-- <numeric name="agent_horizon" data="0.30" />  
     <numeric name="agent_timestep" data="0.01" /> -->
 
     <!-- horizon/dt match reference tau-MPPI: T=40 steps, dt=0.01 -->
     <!-- dt was changed from 0.003 to 0.01 caused by the change in agent_timestep and for safety -->
-    <numeric name="agent_horizon" data="0.3" />
+    <!-- <numeric name="agent_horizon" data="0.30" /> -->
+    <numeric name="agent_horizon" data="0.30" />
     <numeric name="agent_timestep" data="0.01" />
 
     <numeric name="agent_policy_width" data="0.0035" />
     <numeric name="sampling_trajectories" data="128"/>
     <!-- Dense per-step control: 40 zero-spline knots over the horizon. -->
-    <numeric name="sampling_spline_points" data="40" />
+    <numeric name="sampling_spline_points" data="1" />
     <!-- 0=Zero, 1=Linear, 2=Cubic, 3=Bezier. Reference uses dense per-step (Zero). -->
     <numeric name="sampling_representation" data="0" />
     <!-- Global multiplier on per-joint sigma (reference uses raw sigma -> 1.0). -->
@@ -34,7 +35,10 @@
     <numeric name="gradient_spline_points" data="6" />
     <!-- // =============== EC =============== // -->
     <!-- WIP CHUNK 3: force-control numerics -->
-    <numeric name="F_des" size="3" data="0 0 -10"/>
+    <!-- <numeric name="F_des" size="3" data="0 0 -9"/> -->
+    <numeric name="F_des" size="3" data="0 0 -5"/>
+
+
     <!-- Subtree weight of hand_site's parent body: hand (0.73) + two
          fingers (0.015 each) = 0.76 kg → 7.46 N. Used to remove the
          gravity bias from the hand_force sensor when computing
@@ -48,14 +52,18 @@
     <numeric name="hybrid_switch_dist"  data="0.02"/>
     <numeric name="hybrid_switch_angle" data="0.087"/>  <!-- ~5 deg -->
     <numeric name="hybrid_switch_delay" data="0.5"/>
+    <!-- Wipe (polishing) trajectory parameters. Read by fr3.cc + cost_fn.cc. -->
+    <numeric name="wipe_stabilize" data="5.0"/>
+    <numeric name="wipe_radius"    data="0.05"/>
+    <numeric name="wipe_period"    data="6.28318530718"/>
     <!-- // ================================== // -->
   </custom>
 
-  <statistic extent="1.5" center="0.1 0.2 0.3"/>
+  <statistic extent="0.8" center="0.2 0 0.4"/>
 
   <visual>
     <quality shadowsize="8192"/>
-    <global azimuth="180" elevation="-30"/>
+    <global azimuth="120" elevation="-20"/>
     <scale framelength=".3" framewidth=".03"/>
   </visual>
 
@@ -161,7 +169,7 @@
     <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188 0.005 0.005"/>
      -->
      <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188"/> -->
-     <key name="home" qpos="0 0 0 -1.57079 0 1.57079 0"/>
+     <key name="home" qpos="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
   </keyframe>
 
   <sensor>
@@ -183,10 +191,14 @@
          unused (kept at the previous values for compatibility). -->
     <user name="Reach_pos"         dim="3" user="2 1000000 0 5000000  0.01"/>
     <user name="Reach_ori"         dim="3" user="2 50000   0 500000   0.01"/>
-    <user name="joint_cent"        dim="7" user="2 1000    0 5000     1"/>
+    <user name="joint_cent"        dim="7" user="2 20    0 5000     1"/>
     <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>
-    <user name="EE_Force"          dim="3" user="2 30      0 100      1"/>
+    <user name="EE_Force"          dim="3" user="2 100      0 2000     1"/>
+    <!-- <user name="EE_Force"          dim="3" user="2 100      0 100      1"/> -->
     <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
+    <!-- EE +z velocity penalty: discourages lift transient (asymmetric, only
+         positive zvel penalized). -->
+    <user name="EE_zvel"           dim="1" user="2 10000     0 2000     0.01"/>
 
     <framepos name="hand" objtype="site" objname="hand_site"/>
     <framequat name="hand_orient" objtype="site" objname="hand_site"/>

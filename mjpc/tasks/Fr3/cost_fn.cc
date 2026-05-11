@@ -31,25 +31,23 @@ namespace {
 }  // namespace
 
 int CostPosition(const mjModel* model, const mjData* data, double* residual) {
-  // Hybrid xy tracking. Default target = hand_target sensor (mocap-based).
-  // During wipe phase (userdata[4] >= 0), recompute the target analytically
-  // from (center = userdata[0..2], data->time − userdata[4]) so MPPI sees a
-  // time-varying reference within the rollout horizon, not a frozen one.
+  // Hybrid xy tracking. Target = hand_target sensor (mocap-based).
   double* hand = SensorByName(model, data, "hand");
   double* sensor_target = SensorByName(model, data, "hand_target");
   double tx = sensor_target[0];
   double ty = sensor_target[1];
 
+  // Wipe-aware target reconstruction so MPPI sees the time-varying circular
+  // target within rollouts (frozen mocap would lag).
   if (model->nuserdata >= 5 && data->userdata[4] >= 0.0) {
-    double rx  = mjpc::GetNumberOrDefault(0.05, model, "wipe_radius_x");
-    double ry  = mjpc::GetNumberOrDefault(0.05, model, "wipe_radius_y");
-    double T   = mjpc::GetNumberOrDefault(4.0, model, "wipe_period");
-    double phy = mjpc::GetNumberOrDefault(1.5707963, model, "wipe_phase_y");
+    double r = mjpc::GetNumberOrDefault(0.05, model, "wipe_radius");
+    double T = mjpc::GetNumberOrDefault(3.14159265358979, model, "wipe_period");
     if (T > 1e-6) {
       double t_w = data->time - data->userdata[4];
       double w = 2.0 * 3.14159265358979 / T;
-      tx = data->userdata[0] + rx * std::cos(w * t_w);
-      ty = data->userdata[1] + ry * std::sin(w * t_w + phy);
+      double theta = w * t_w;
+      tx = data->userdata[0] + r * (std::cos(theta) - 1.0);
+      ty = data->userdata[1] + r * std::sin(theta);
     }
   }
 
@@ -165,9 +163,8 @@ int CostForce(const mjModel* model, const mjData* data, double* residual) {
   int id = mj_name2id(model, mjOBJ_NUMERIC, "F_des");
   const double* F_des = model->numeric_data + model->numeric_adr[id];
 
-  // Pick the active signal here:
+  // Symmetric force cost (restored from asymmetric test).
   residual[2] = F_des[2] - F_task[2];
-  // residual[2] = F_des[2] - F_press_z;
   (void)F_press_z;
   return 3;
 }
@@ -178,6 +175,22 @@ int CostControl(const mjModel* model, const mjData* data, double* residual) {
     residual[i] = tau[i];
   }
   return 7;
+}
+
+int CostEEVelZ(const mjModel* model, const mjData* data, double* residual) {
+  // Penalize EE +z linear velocity (lift direction). ee_vel = J_p · qvel,
+  // z-component. Negative ez_vel (press direction) is fine; only the
+  // positive part is fed as residual.
+  residual[0] = 0.0;
+  if (model->nv < 7) return 1;
+  double jacp[3 * 7], jacr[3 * 7];
+  GetHandManipulatorJacobian(model, data, jacp, jacr);
+  double ez_vel = 0.0;
+  for (int k = 0; k < 7; k++) {
+    ez_vel += jacp[2 * 7 + k] * data->qvel[k];
+  }
+  residual[0] = (ez_vel > 0.0) ? ez_vel : 0.0;
+  return 1;
 }
 
 }  // namespace mjpc::fr3

@@ -40,6 +40,7 @@ void FR3::ResidualFn::Residual(const mjModel* model, const mjData* data,
   counter += fr3::CostJointVelocity(model, data, residual + counter);
   counter += fr3::CostForce(model, data, residual + counter);
   counter += fr3::CostControl(model, data, residual + counter);
+  counter += fr3::CostEEVelZ(model, data, residual + counter);
 
   // Sensor dim sanity check.
   int user_sensor_dim = 0;
@@ -65,9 +66,19 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
     const char* path = std::getenv("MJPC_FORCE_LOG");
     if (path && path[0]) {
       csv_file = std::fopen(path, "w");
-      if (csv_file) std::fprintf(csv_file,
-          "time,Fx,Fy,Fz,F_task_z,"
-          "ee_x,ee_y,ee_z,tgt_x,tgt_y,tgt_z,hybrid\n");
+      if (csv_file) {
+        std::fprintf(csv_file,
+            "time,Fx,Fy,Fz,F_task_z,"
+            "ee_x,ee_y,ee_z,tgt_x,tgt_y,tgt_z,hybrid,"
+            "q1,q2,q3,q4,q5,q6,q7,"
+            "qd1,qd2,qd3,qd4,qd5,qd6,qd7,"
+            "rp_x,rp_y,"             // CostPosition residual (z=0)
+            "ro_x,ro_y,ro_z,"        // CostOrientation residual
+            "rf_z,"                  // CostForce residual (z component)
+            "rjc_1,rjc_2,rjc_3,rjc_4,rjc_5,rjc_6,rjc_7,"   // joint_cent
+            "rjv_1,rjv_2,rjv_3,rjv_4,rjv_5,rjv_6,rjv_7,"   // joint_vel
+            "rc_1,rc_2,rc_3,rc_4,rc_5,rc_6,rc_7\n");       // u_reg (ctrl)
+      }
     }
     csv_inited = true;
   }
@@ -108,10 +119,43 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
                    data->time, F[0], F[1], F[2], F_task_z,
                    ee_x, ee_y, ee_z, hybrid);
       if (csv_file) {
+        // Compute per-cost residuals (re-using the same functions used by
+        // ResidualFn::Residual). All have a fixed length 2/3/3/7/7/1/7.
+        double rp[3]  = {0,0,0};
+        double ro[3]  = {0,0,0};
+        double rjc[7] = {0,0,0,0,0,0,0};
+        double rjv[7] = {0,0,0,0,0,0,0};
+        double rf[3]  = {0,0,0};
+        double rc[7]  = {0,0,0,0,0,0,0};
+        fr3::CostPosition(model, data, rp);
+        fr3::CostOrientation(model, data, ro);
+        fr3::CostJointCentralize(model, data, rjc);
+        fr3::CostJointVelocity(model, data, rjv);
+        fr3::CostForce(model, data, rf);
+        fr3::CostControl(model, data, rc);
+        const double* qp = data->qpos;
+        const double* qv = data->qvel;
+
         std::fprintf(csv_file,
-                     "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d\n",
-                     data->time, F[0], F[1], F[2], F_task_z,
-                     ee_x, ee_y, ee_z, tgt_x, tgt_y, tgt_z, hybrid);
+            "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,"
+            "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+            "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+            "%.5f,%.5f,"
+            "%.5f,%.5f,%.5f,"
+            "%.5f,"
+            "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+            "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+            "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f\n",
+            data->time, F[0], F[1], F[2], F_task_z,
+            ee_x, ee_y, ee_z, tgt_x, tgt_y, tgt_z, hybrid,
+            qp[0], qp[1], qp[2], qp[3], qp[4], qp[5], qp[6],
+            qv[0], qv[1], qv[2], qv[3], qv[4], qv[5], qv[6],
+            rp[0], rp[1],
+            ro[0], ro[1], ro[2],
+            rf[2],
+            rjc[0], rjc[1], rjc[2], rjc[3], rjc[4], rjc[5], rjc[6],
+            rjv[0], rjv[1], rjv[2], rjv[3], rjv[4], rjv[5], rjv[6],
+            rc[0], rc[1], rc[2], rc[3], rc[4], rc[5], rc[6]);
         std::fflush(csv_file);
       }
     }
@@ -145,10 +189,15 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
       traj_start_mocap_[0] = xp[0];
       traj_start_mocap_[1] = xp[1];
       traj_start_mocap_[2] = xp[2] + 0.1034;
-      // Target = EE pose at home keyframe: no approach motion, EE just holds.
-      for (int i = 0; i < 3; i++) traj_final_mocap_[i] = traj_start_mocap_[i];
+      // Default target = .cu reference goal: EE at (0.4, 0.0, 0.3).
+      // mocap_z = ee_z + 0.1034 because the hand_copy quat (0 1 0 0)
+      // flips +z to −z so the hand_copy site at local (0,0,0.1034)
+      // ends up at world (mocap_x, mocap_y, mocap_z − 0.1034).
+      traj_final_mocap_[0] = 0.4;
+      traj_final_mocap_[1] = 0.0;
+      traj_final_mocap_[2] = 0.3 + 0.1034;
       // Optional overrides: MJPC_TARGET_X/Y/Z set the GOAL EE position
-      // (world frame). mocap_z = ee_z + 0.1034 due to hand_copy quat flip.
+      // (world frame).
       if (const char* tx = std::getenv("MJPC_TARGET_X")) {
         traj_final_mocap_[0] = std::atof(tx);
       }
@@ -158,18 +207,21 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
       if (const char* tz = std::getenv("MJPC_TARGET_Z")) {
         traj_final_mocap_[2] = std::atof(tz) + 0.1034;
       }
-      data->mocap_pos[0] = traj_start_mocap_[0];
-      data->mocap_pos[1] = traj_start_mocap_[1];
-      data->mocap_pos[2] = traj_start_mocap_[2];
-      // Match mocap orientation to hand_site orientation at home so the
-      // target pose (position + orientation) equals the home EE pose.
-      const double* R = data->site_xmat + 9 * site_id;
-      double ee_quat[4];
-      mju_mat2Quat(ee_quat, R);
-      data->mocap_quat[0] = ee_quat[0];
-      data->mocap_quat[1] = ee_quat[1];
-      data->mocap_quat[2] = ee_quat[2];
-      data->mocap_quat[3] = ee_quat[3];
+      // Step the mocap to the final target immediately — match .cu, which
+      // does not interpolate (approach_time = 0 by default).
+      data->mocap_pos[0] = traj_final_mocap_[0];
+      data->mocap_pos[1] = traj_final_mocap_[1];
+      data->mocap_pos[2] = traj_final_mocap_[2];
+      // TEST: target orientation reverted to home EE quat (identity rotation
+      // around world z, EE pointing −z). Previous .cu-matched 45° rotation
+      // hindered wipe-press coexistence per Test B observations.
+      const double* R_q = data->site_xmat + 9 * site_id;
+      double ee_quat_q[4];
+      mju_mat2Quat(ee_quat_q, R_q);
+      data->mocap_quat[0] = ee_quat_q[0];
+      data->mocap_quat[1] = ee_quat_q[1];
+      data->mocap_quat[2] = ee_quat_q[2];
+      data->mocap_quat[3] = ee_quat_q[3];
     } else {
       for (int i = 0; i < 3; i++) traj_start_mocap_[i] = data->mocap_pos[i];
       for (int i = 0; i < 3; i++) traj_final_mocap_[i] = traj_start_mocap_[i];
@@ -177,102 +229,39 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
     traj_init_ = true;
   }
 
-  double approach_time = GetNumberOrDefault(2.0, model, "approach_time");
   double t_traj = data->time - traj_t0_;
-  if (t_traj < approach_time) {
-    double s = t_traj / approach_time;
-    for (int i = 0; i < 3; i++) {
-      data->mocap_pos[i] = traj_start_mocap_[i] +
-                           s * (traj_final_mocap_[i] - traj_start_mocap_[i]);
-    }
-  }
 
-  // Wiping (polishing) phase: after approach + stabilize_delay, drive a
-  // closed xy pattern around traj_final_mocap_.xy. z target stays at the
-  // approach goal — force cost holds contact depth, position-xy cost slides
-  // the EE in a circle/lissajous. Tunables (XML numerics, fall back to
-  // env vars, default in code):
-  //   wipe_stabilize  — sec after approach end before wipe begins (1.5s)
-  //   wipe_radius_x/y — half-axis lengths in meters (0.05, 0.05)
-  //   wipe_period     — seconds for one full cycle (4.0s)
-  //   wipe_phase_y    — y phase offset (rad), pi/2 → circle, 0 → line (pi/2)
-  double wipe_stab    = GetNumberOrDefault(1.5, model, "wipe_stabilize");
-  double wipe_rx      = GetNumberOrDefault(0.05, model, "wipe_radius_x");
-  double wipe_ry      = GetNumberOrDefault(0.05, model, "wipe_radius_y");
-  double wipe_period  = GetNumberOrDefault(4.0, model, "wipe_period");
-  double wipe_phase_y = GetNumberOrDefault(1.5707963, model, "wipe_phase_y");
-  double t_post = t_traj - approach_time;
-  if (t_post > wipe_stab && wipe_period > 1e-6) {
-    double t_w = t_post - wipe_stab;
+  // Wiping (polishing) phase. Pattern from .cu test.py:
+  //   x = start + r·(cosθ−1), y = start + r·sinθ, ω = 2 rad/s → period = π
+  //   wipe_stabilize  — sec after start before wipe begins (5.0s)
+  //   wipe_radius     — circle radius in meters (0.05)
+  //   wipe_period     — seconds for one full cycle (π = 3.14159)
+  double wipe_stab    = GetNumberOrDefault(5.0, model, "wipe_stabilize");
+  double wipe_radius  = GetNumberOrDefault(0.05, model, "wipe_radius");
+  double wipe_period  = GetNumberOrDefault(3.14159265358979, model, "wipe_period");
+  if (t_traj > wipe_stab && wipe_period > 1e-6) {
+    double t_w = t_traj - wipe_stab;
     double w = 2.0 * 3.14159265358979 / wipe_period;
-    data->mocap_pos[0] = traj_final_mocap_[0] + wipe_rx * std::cos(w * t_w);
+    double theta = w * t_w;
+    data->mocap_pos[0] = traj_final_mocap_[0] +
+                         wipe_radius * (std::cos(theta) - 1.0);
     data->mocap_pos[1] = traj_final_mocap_[1] +
-                         wipe_ry * std::sin(w * t_w + wipe_phase_y);
+                         wipe_radius * std::sin(theta);
     // z stays at traj_final_mocap_[2] (force cost owns z anyway).
     data->mocap_pos[2] = traj_final_mocap_[2];
     // Publish wipe origin time so CostPosition can reconstruct the
     // time-varying target inside MPPI rollouts.
     if (model->nuserdata >= 5 && data->userdata[4] < 0.0) {
-      data->userdata[4] = traj_t0_ + approach_time + wipe_stab;
+      data->userdata[4] = traj_t0_ + wipe_stab;
     }
   }
 
-  // Publish state for the cost functions:
-  //   userdata[0..2] = traj_final_mocap_ -> the FINAL goal (== xml mocap pos
-  //                    until the user starts dragging).
-  //   userdata[3]    = hybrid_active flag. Activates once BOTH:
-  //                    (a) EE position + orientation reach the final goal
-  //                    (b) hybrid_switch_delay seconds have passed since (a)
-  //                    Latches once set — never falls back to 0.
+  // Publish wipe center to userdata[0..2] so cost can reconstruct the
+  // time-varying target inside MPPI rollouts. userdata[3] (hybrid flag)
+  // is already set to 1.0 at init; the legacy "approach + reached + delay"
+  // gate has been removed since hybrid starts at t=0.
   if (model->nuserdata >= 4) {
     for (int i = 0; i < 3; i++) data->userdata[i] = traj_final_mocap_[i];
-
-    if (data->userdata[3] < 0.5 && t_traj > approach_time) {
-      int site_id = mj_name2id(model, mjOBJ_SITE, "hand_site");
-      bool reached = false;
-      double dist_pos = 0.0, ang_err = 0.0;
-
-      if (site_id >= 0) {
-        // Position error: EE site vs final target site.
-        const double* xp = data->site_xpos + 3 * site_id;
-        double dx = xp[0] - traj_final_mocap_[0];
-        double dy = xp[1] - traj_final_mocap_[1];
-        // Final target site = traj_final_mocap_ + (0, 0, -0.1034) (quat flip).
-        double dz = xp[2] - (traj_final_mocap_[2] - 0.1034);
-        dist_pos = std::sqrt(dx * dx + dy * dy + dz * dz);
-
-        // Orientation error: |axis-angle(R_target^T * R_hand)|.
-        double* hand_quat = SensorByName(model, data, "hand_orient");
-        double* target_quat = SensorByName(model, data, "hand_target_orient");
-        if (hand_quat && target_quat) {
-          double tconj[4], err_q[4], err_aa[3];
-          mju_negQuat(tconj, target_quat);
-          mju_mulQuat(err_q, tconj, hand_quat);
-          mju_quat2Vel(err_aa, err_q, 1.0);
-          ang_err = std::sqrt(err_aa[0] * err_aa[0] + err_aa[1] * err_aa[1] +
-                              err_aa[2] * err_aa[2]);
-        }
-
-        double pos_thresh = GetNumberOrDefault(0.02, model, "hybrid_switch_dist");
-        double ang_thresh = GetNumberOrDefault(0.087, model, "hybrid_switch_angle");
-        reached = (dist_pos < pos_thresh) && (ang_err < ang_thresh);
-      }
-
-      double delay = GetNumberOrDefault(0.5, model, "hybrid_switch_delay");
-
-      if (reached && traj_reach_time_ < 0.0) {
-        traj_reach_time_ = data->time;
-        std::fprintf(stderr,
-                     "[t=%.3f] reached goal (pos=%.4f m, ang=%.3f rad), "
-                     "waiting %.2fs to switch to hybrid\n",
-                     data->time, dist_pos, ang_err, delay);
-      }
-      if (traj_reach_time_ >= 0.0 &&
-          data->time - traj_reach_time_ >= delay) {
-        data->userdata[3] = 1.0;
-        std::fprintf(stderr, "[t=%.3f] hybrid mode ON\n", data->time);
-      }
-    }
   }
 
   double residuals[100];

@@ -42,6 +42,10 @@ int CostForce(const mjModel* model, const mjData* data, double* residual);
 // Control effort: tau (7).
 int CostControl(const mjModel* model, const mjData* data, double* residual);
 
+// EE +z velocity penalty (1): residual = max(0, ee_z_vel).
+// Discourages the lift transient without restricting press-down motion.
+int CostEEVelZ(const mjModel* model, const mjData* data, double* residual);
+
 }  // namespace mjpc::fr3
 
 #endif  // MJPC_MJPC_TASKS_FR3_COST_FN_H_
