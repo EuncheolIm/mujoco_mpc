@@ -51,6 +51,8 @@ int CostPosition(const mjModel* model, const mjData* data, double* residual) {
     }
   }
 
+  // Hybrid mode: xy via CostPosition, z via CostForce. residual[2] = 0
+  // so position cost only owns the xy plane.
   residual[0] = hand[0] - tx;
   residual[1] = hand[1] - ty;
   residual[2] = 0.0;

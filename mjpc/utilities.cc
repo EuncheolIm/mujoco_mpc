@@ -14,6 +14,8 @@
 
 #include "mjpc/utilities.h"
 
+#include "mjpc/policies/fm_config.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -522,6 +524,11 @@ static std::string GetTasksDir() {
   const char* tasks_dir = std::getenv("MJPC_TASKS_DIR");
   if (tasks_dir) {
     return tasks_dir;
+  }
+  // Fall back to fm_config.yaml's tasks_dir if specified.
+  const std::string& cfg_dir = mjpc::GetFMConfig().tasks_dir;
+  if (!cfg_dir.empty()) {
+    return cfg_dir;
   }
   return absl::StrCat(GetExecutableDir(), "/../mjpc/tasks");
 }

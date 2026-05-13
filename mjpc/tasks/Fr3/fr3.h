@@ -15,7 +15,9 @@
 #ifndef MJPC_MJPC_TASKS_FR3_FR3_H_
 #define MJPC_MJPC_TASKS_FR3_FR3_H_
 
+#include <memory>
 #include <string>
+
 #include <mujoco/mujoco.h>
 #include "mjpc/task.h"
 
@@ -50,7 +52,6 @@ class FR3 : public Task {
   double traj_start_mocap_[3] = {0, 0, 0};
   double traj_final_mocap_[3] = {0, 0, 0};
   // Time when EE first reached the goal (pos + ori). -1 = not yet reached.
-  // Hybrid mode activates `hybrid_switch_delay` seconds after this time.
   double traj_reach_time_ = -1.0;
 };
 }  // namespace mjpc

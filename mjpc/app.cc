@@ -33,6 +33,7 @@
 #include <glfw_adapter.h>
 #include "mjpc/array_safety.h"
 #include "mjpc/agent.h"
+#include "mjpc/policies/fm_config.h"
 #include "mjpc/estimators/estimator.h"
 #include "mjpc/simulate.h"  // mjpc fork
 #include "mjpc/task.h"
@@ -461,10 +462,13 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
   sim->delete_old_m_d = true;
   sim->loadrequest = 2;
 
-  // Auto-start with planner + action enabled when MJPC_AUTORUN is set
-  // (any non-zero or unset). Set MJPC_AUTORUN=0 to start paused.
+  // Auto-start with planner + action enabled. Resolution order:
+  //   1) MJPC_AUTORUN env var (non-zero → on, "0" → off).
+  //   2) fm_config.yaml `autorun:` flag.
+  // Default: off (paused start).
   const char* autorun = std::getenv("MJPC_AUTORUN");
-  bool autorun_on = autorun && std::atoi(autorun) != 0;
+  bool autorun_on = autorun ? (std::atoi(autorun) != 0)
+                            : mjpc::GetFMConfig().autorun;
   sim->run = autorun_on ? 1 : 0;
   if (autorun_on) {
     sim->agent->plan_enabled = true;

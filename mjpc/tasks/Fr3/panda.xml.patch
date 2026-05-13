@@ -13,7 +13,7 @@ diff --git a/panda_modified.xml b/panda_modified.xml
        <material specular="0.5" shininess="0.25"/>
 -      <joint armature="0.1" damping="1" axis="0 0 1" range="-2.8973 2.8973"/>
 -      <general dyntype="none" biastype="affine" ctrlrange="-2.8973 2.8973" forcerange="-87 87"/>
-+      <joint armature="0.1" damping="2" axis="0 0 1" range="-2.8973 2.8973"/>
++      <joint armature="0.195" damping="0.21" axis="0 0 1" range="-2.8973 2.8973"/>
        <default class="finger">
          <joint axis="0 1 0" type="slide" range="0 0.04"/>
        </default>
@@ -101,7 +101,7 @@ diff --git a/panda_modified.xml b/panda_modified.xml
 -                      fullinertia="1.2516e-2 1.0027e-2 4.815e-3 -4.28e-4 -1.196e-3 -7.41e-4"/>
 -                    <joint name="joint7"/>
 +                        fullinertia="1.2516e-2 1.0027e-2 4.815e-3 -4.28e-4 -1.196e-3 -7.41e-4"/>
-+                    <joint name="joint7" damping="1" limited="false"/>
++                    <joint name="joint7" limited="false"/>
                      <geom mesh="link7_0" material="white" class="visual"/>
                      <geom mesh="link7_1" material="black" class="visual"/>
                      <geom mesh="link7_2" material="black" class="visual"/>

@@ -100,6 +100,20 @@ add_library(
   planners/MPPI/policy.cc
   planners/MPPI/policy.h
 
+  # FlowMPPI (MPPI with FM warm-start)
+  planners/FlowMPPI/planner.cc
+  planners/FlowMPPI/planner.h
+
+  planners/FlowMPPI/policy.cc
+  planners/FlowMPPI/policy.h
+
+  # FMOnly (pure FM PD, no MPPI sampling)
+  planners/FMOnly/planner.cc
+  planners/FMOnly/planner.h
+
+  planners/FMOnly/policy.cc
+  planners/FMOnly/policy.h
+
   # MPOPI
   planners/MPOPI/planner.cc
   planners/MPOPI/planner.h
@@ -166,6 +180,8 @@ add_library(
   app.h
   norm.cc
   norm.h
+  policies/onnx_policy.cc
+  policies/onnx_policy.h
   simulate.cc
   simulate.h
   task.cc
@@ -175,6 +191,29 @@ add_library(
 set_target_properties(libmjpc PROPERTIES OUTPUT_NAME mjpc)
 target_compile_options(libmjpc PUBLIC ${MJPC_COMPILE_OPTIONS})
 target_compile_definitions(libmjpc PRIVATE MJSIMULATE_STATIC)
+
+# ------------------------------------------------------------------
+# ONNX Runtime (optional, for FM policy warm-start). Looks for an
+# install at $HOME/.local/onnxruntime first.
+# ------------------------------------------------------------------
+set(ONNXRUNTIME_ROOT "$ENV{HOME}/.local/onnxruntime"
+    CACHE PATH "Path to ONNX Runtime install (containing include/ and lib/)")
+find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
+    HINTS ${ONNXRUNTIME_ROOT}/include)
+find_library(ONNXRUNTIME_LIBRARY onnxruntime
+    HINTS ${ONNXRUNTIME_ROOT}/lib)
+
+if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+  message(STATUS "MJPC: ONNX Runtime found at ${ONNXRUNTIME_LIBRARY}")
+  set(MJPC_HAS_ONNXRUNTIME ON)
+  target_compile_definitions(libmjpc PUBLIC MJPC_USE_ONNXRUNTIME=1)
+  target_include_directories(libmjpc PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+else()
+  message(STATUS "MJPC: ONNX Runtime not found (FM warm-start disabled). "
+                  "Set ONNXRUNTIME_ROOT to enable.")
+  set(MJPC_HAS_ONNXRUNTIME OFF)
+endif()
+
 target_link_libraries(
   libmjpc
   absl::any_invocable
@@ -191,6 +230,34 @@ target_link_libraries(
   Threads::Threads
   nlohmann_json::nlohmann_json
 )
+
+if(MJPC_HAS_ONNXRUNTIME)
+  target_link_libraries(libmjpc ${ONNXRUNTIME_LIBRARY})
+  # Eigen3 is a header-only dependency required by the FM policy wrapper.
+  find_path(EIGEN3_INCLUDE_DIR Eigen/Dense
+      HINTS /usr/include/eigen3 /usr/local/include/eigen3)
+  if(EIGEN3_INCLUDE_DIR)
+    message(STATUS "MJPC: Eigen3 at ${EIGEN3_INCLUDE_DIR}")
+    target_include_directories(libmjpc PUBLIC ${EIGEN3_INCLUDE_DIR})
+  else()
+    message(WARNING "MJPC: Eigen3 not found — FM policy build will fail")
+  endif()
+
+  # cnpy for reading .npy stats files used by FM policy normalization.
+  find_path(CNPY_INCLUDE_DIR cnpy.h
+      HINTS $ENV{HOME}/.local/include /usr/local/include /usr/include)
+  find_library(CNPY_LIBRARY cnpy
+      HINTS $ENV{HOME}/.local/lib /usr/local/lib /usr/lib)
+  if(CNPY_INCLUDE_DIR AND CNPY_LIBRARY)
+    message(STATUS "MJPC: cnpy at ${CNPY_LIBRARY}")
+    target_include_directories(libmjpc PUBLIC ${CNPY_INCLUDE_DIR})
+    target_link_libraries(libmjpc ${CNPY_LIBRARY})
+    target_compile_definitions(libmjpc PUBLIC MJPC_HAS_CNPY=1)
+  else()
+    message(WARNING "MJPC: cnpy not found — FM policy build will fail")
+  endif()
+endif()
+
 target_include_directories(libmjpc
   PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -249,6 +316,17 @@ target_link_libraries(
   absl::flags_parse
 )
 target_include_directories(testspeed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# FM policy smoke + closed-loop tests (only when ONNX Runtime is available).
+if(MJPC_HAS_ONNXRUNTIME)
+  add_executable(fm_policy_test policies/fm_policy_test.cc)
+  target_link_libraries(fm_policy_test libmjpc Threads::Threads)
+  target_include_directories(fm_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+  add_executable(fm_closed_loop_test policies/fm_closed_loop_test.cc)
+  target_link_libraries(fm_closed_loop_test libmjpc mujoco::mujoco glfw Threads::Threads)
+  target_include_directories(fm_closed_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+endif()
 target_compile_options(testspeed PUBLIC ${MJPC_COMPILE_OPTIONS})
 target_link_options(testspeed PRIVATE ${MJPC_LINK_OPTIONS})
 target_compile_definitions(testspeed PRIVATE MJSIMULATE_STATIC)

@@ -28,6 +28,8 @@
 
 #include "mjpc/planners/MPPI/planner.h"
 #include "mjpc/planners/MPOPI/planner.h"
+#include "mjpc/planners/FlowMPPI/planner.h"
+#include "mjpc/planners/FMOnly/planner.h"
 
 namespace mjpc {
 const char kPlannerNames[] =
@@ -39,7 +41,9 @@ const char kPlannerNames[] =
     "iLQS\n"
     "Robust Sampling\n"
     "Cross Entropy\n"
-    "Sample Gradient";
+    "Sample Gradient\n"
+    "FlowMPPI\n"
+    "FMOnly";
 
 // load all available planners
 std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
@@ -56,6 +60,8 @@ std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
       new RobustPlanner(std::make_unique<mjpc::SamplingPlanner>()));
   planners.emplace_back(new mjpc::CrossEntropyPlanner);
   planners.emplace_back(new mjpc::SampleGradientPlanner);
+  planners.emplace_back(new mjpc::FlowMPPIPlanner);
+  planners.emplace_back(new mjpc::FMOnlyPlanner);
   return planners;
 }
 

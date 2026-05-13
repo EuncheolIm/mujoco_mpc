@@ -184,11 +184,12 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
       mj_kinematics(model, data);
       const double* xp = data->site_xpos + 3 * site_id;
       // hand_copy quat (0 1 0 0) flips local +z to world -z, so the site at
-      // local (0,0,0.1034) ends up at mocap_z - 0.1034 in world. To put the
-      // mocap site at the current EE position: mocap_z = ee_z + 0.1034.
+      // local (0,0,0.214) ends up at mocap_z - 0.214 in world. To put the
+      // mocap site at the current EE position: mocap_z = ee_z + 0.214.
+      // (Offset 0.214 matches FM training data convention.)
       traj_start_mocap_[0] = xp[0];
       traj_start_mocap_[1] = xp[1];
-      traj_start_mocap_[2] = xp[2] + 0.1034;
+      traj_start_mocap_[2] = xp[2] + 0.214;
       // Default target = .cu reference goal: EE at (0.4, 0.0, 0.3).
       // mocap_z = ee_z + 0.1034 because the hand_copy quat (0 1 0 0)
       // flips +z to −z so the hand_copy site at local (0,0,0.1034)
@@ -207,14 +208,29 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
       if (const char* tz = std::getenv("MJPC_TARGET_Z")) {
         traj_final_mocap_[2] = std::atof(tz) + 0.1034;
       }
-      // Step the mocap to the final target immediately — match .cu, which
-      // does not interpolate (approach_time = 0 by default).
+      // Wiping task target: EE just above table surface (z=0.30 table top
+      // + 0.214 site offset due to hand_copy mocap_quat (0,1,0,0) flip).
+      // EE applies F_des in z; xy traces wipe circle.
+      traj_final_mocap_[0] = 0.4;
+      traj_final_mocap_[1] = 0.0;
+      traj_final_mocap_[2] = 0.3 + 0.214;
+      if (const char* tx = std::getenv("MJPC_TARGET_X"))
+        traj_final_mocap_[0] = std::atof(tx);
+      if (const char* ty = std::getenv("MJPC_TARGET_Y"))
+        traj_final_mocap_[1] = std::atof(ty);
+      if (const char* tz = std::getenv("MJPC_TARGET_Z"))
+        traj_final_mocap_[2] = std::atof(tz) + 0.214;
       data->mocap_pos[0] = traj_final_mocap_[0];
       data->mocap_pos[1] = traj_final_mocap_[1];
       data->mocap_pos[2] = traj_final_mocap_[2];
-      // TEST: target orientation reverted to home EE quat (identity rotation
-      // around world z, EE pointing −z). Previous .cu-matched 45° rotation
-      // hindered wipe-press coexistence per Test B observations.
+      // Capture current EE site world rotation as mocap_quat, matching
+      // fm_closed_loop_test's init_mocap_to_home_ee. The HOME pose has
+      // joint 7 = π/4 which contributes ~-π/4 to world yaw; encoding
+      // this in mocap_quat tells FM the goal orientation matches the
+      // robot's actual home orientation (no rotation needed at rest).
+      // Hardcoding (0,1,0,0) instead would tell FM "yaw=0 target", but
+      // robot's actual yaw is -π/4 — FM then drives joint 7 to 0.023 to
+      // correct the apparent mismatch.
       const double* R_q = data->site_xmat + 9 * site_id;
       double ee_quat_q[4];
       mju_mat2Quat(ee_quat_q, R_q);

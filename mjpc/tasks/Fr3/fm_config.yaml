@@ -1,0 +1,42 @@
+# FMOnly + FlowMPPI planner config (FR3 / FM tracking).
+# Loaded once per process. Override path via env var MJPC_FM_CONFIG.
+# task.xml owns MPPI/sampling params (lambda, knots, sigma, trajectories,
+# horizon, wipe, F_des, …); this file owns FM-side hyperparameters
+# and a few mjpc runtime flags (tasks_dir, autorun).
+
+# ============ mjpc runtime (env-var equivalents) ============
+# tasks_dir → MJPC_TASKS_DIR. Where mjpc reads task XMLs from.
+#   "" (empty) = mjpc default (build/.../mjpc/tasks).
+#   "mjpc/tasks" = read directly from source tree (no rebuild needed).
+# Environment variable takes precedence if set.
+tasks_dir: mjpc/tasks
+# autorun → MJPC_AUTORUN. true starts the sim with planner+action enabled.
+autorun: true
+
+# ============ FM model ============
+# Env vars MJPC_FM_CKPT / MJPC_FM_STATS override these paths if set.
+fm_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/flow_policy.onnx
+fm_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/normalization_stats.npz
+fm_chunk_dt: 0.020          # FM action interval (s). 50 Hz default.
+fm_te_decay: 0.01           # TE blend exp decay weight: w_i = exp(-decay * i)
+fm_te_buffer: 10            # max chunks held in temporal-ensemble buffer
+
+# ============ Tracking enhancements (eval_circle_v24) ============
+# lookahead: feed FM a future goal_pos at (t + lookahead). 0 disables.
+#   eval_circle_v24 best = 0.14 (single-thread); mjpc multi-thread = 0.24.
+lookahead: 0.24
+# no_temporal_ensemble: use only the latest FM chunk (no blend with older).
+no_temporal_ensemble: true
+# chunk_idx: which entry of FM chunk (0..H-1) to use as q_target.
+#   H-1 = horizon end, pairs with lookahead to track moving targets.
+chunk_idx: 9
+# vel_ff: PD Kd term uses (qdot_d - qdot) instead of (0 - qdot),
+#   where qdot_d = (chunk[k+1] - chunk[k]) / fm_chunk_dt.
+vel_ff: true
+
+# ============ PD control law (FMOnly + FlowMPPI warmstart) ============
+# tau = M @ (kp*(q_d - q) + kd*(qdot_d - qdot)) + qfrc_bias  (per joint, clipped)
+kp: 400.0
+kd: 40.0
+tau_max_big: 87.0           # Franka joints 1-4 limit (N·m)
+tau_max_small: 12.0         # Franka joints 5-7 limit (N·m)

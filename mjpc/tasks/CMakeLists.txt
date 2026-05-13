@@ -38,6 +38,17 @@ add_custom_target(
   ${CMAKE_CURRENT_BINARY_DIR}/Fr3/panda.xml
   <${CMAKE_CURRENT_SOURCE_DIR}/Fr3/fr3.xml.patch
 
+  # 4. fr3_yeshand.xml (matches FM training kinematics) — copy to build
+  COMMAND ${CMAKE_COMMAND} -E copy
+  ${CMAKE_CURRENT_SOURCE_DIR}/Fr3/fr3_yeshand.xml
+  ${CMAKE_CURRENT_BINARY_DIR}/Fr3/fr3_yeshand.xml
+
+  # 4b. fr3 assets (different mesh decomposition from panda; needed by
+  # fr3_yeshand.xml). Copy on top of panda assets so both mesh sets coexist.
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+  /home/kkomji/tmp/flow-matching-robot-control/model/assets
+  ${CMAKE_CURRENT_BINARY_DIR}/Fr3/assets
+
   # ================ EC ============ #
 
   # acrobot

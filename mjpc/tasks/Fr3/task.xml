@@ -7,7 +7,7 @@
   <size memory="1M" nuserdata="5"/>
 
   <custom>
-    <numeric name="agent_planner" data="0" />
+    <numeric name="agent_planner" data="9" />
     <!-- <numeric name="agent_horizon" data="0.30" />  
     <numeric name="agent_timestep" data="0.01" /> -->
 
@@ -20,7 +20,7 @@
     <numeric name="agent_policy_width" data="0.0035" />
     <numeric name="sampling_trajectories" data="128"/>
     <!-- Dense per-step control: 40 zero-spline knots over the horizon. -->
-    <numeric name="sampling_spline_points" data="1" />
+    <numeric name="sampling_spline_points" data="30" />
     <!-- 0=Zero, 1=Linear, 2=Cubic, 3=Bezier. Reference uses dense per-step (Zero). -->
     <numeric name="sampling_representation" data="0" />
     <!-- Global multiplier on per-joint sigma (reference uses raw sigma -> 1.0). -->
@@ -72,9 +72,9 @@
   </default>
 
   <asset>
-    <material class="panda" name="white_trans" rgba="1 1 1 0.3"/>
-    <material class="panda" name="off_white_trans" rgba="0.901961 0.921569 0.929412 0.3"/>
-    <material class="panda" name="black_trans" rgba="0.25 0.25 0.25 0.3"/>
+    <material class="fr3" name="white_trans" rgba="1 1 1 0.3"/>
+    <material class="fr3" name="off_white_trans" rgba="0.901961 0.921569 0.929412 0.3"/>
+    <material class="fr3" name="black_trans" rgba="0.25 0.25 0.25 0.3"/>
   </asset>
 
   <compiler texturedir="./textures"/>
@@ -85,10 +85,6 @@
         directional="true" castshadow="true"/>
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
 
-    <!-- Table matched to reference scene_table.xml (used by MPPI_tau.cu):
-         body @ (0.45, 0, 0), top geom at body-local (0,0,0.28) with size
-         0.30 × 0.35 × 0.02 → top surface world z = 0.30. friction 1.0,
-         soft contact (solref 0.04 / solimp 0.9 0.99 0.001), condim 3. -->
     <body name="table" pos="0.45 0.0 0.0">
       <geom name="table_top" type="box" pos="0 0 0.28" size="0.30 0.35 0.02"
             rgba="0.55 0.35 0.18 1" friction="1 0.005 0.0001"
@@ -120,43 +116,9 @@
       <site name="box2" type="box" pos="0 -.026 0" size="0.021 0.005 0.021" rgba=".1 .1 1 1"/>
     </body> -->
 
-    <!--  hand_copy -->
-    <!-- <body name="hand_copy" pos="0.5 0.3 0.5" quat="0.9238795 0 0 -0.3826834" mocap="true"> -->
-    <body name="hand_copy" pos="0.5 0.3 0.5" quat="0 1 0 0" mocap="true">
-      <inertial mass="0.73" pos="-0.01 0 0.03" diaginertia="0.001 0.0025 0.0017"/>
-      <geom mesh="hand_0" material="off_white_trans" class="visual" contype="0" conaffinity="0"  />
-      <geom mesh="hand_1" material="black_trans" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_2" material="black_trans" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_3" material="white_trans" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_4" material="off_white_trans" class="visual" contype="0" conaffinity="0" />
-      <geom mesh="hand_c" class="collision" contype="0" conaffinity="0"/>
-      
-      <site name="hand_copy_site" pos="0 0 0.1034"/>
-      
-      <body name="left_finger_copy" pos="0 0 0.0584">
-        <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
-        <geom mesh="finger_0" material="off_white_trans" class="visual" contype="0" conaffinity="0" />
-        <geom mesh="finger_1" material="black_trans" class="visual" contype="0" conaffinity="0" />
-        <geom mesh="finger_0" class="collision" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_1" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_2" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_3" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_4" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_5" contype="0" conaffinity="0" />
-      </body>
-      
-      <body name="right_finger_copy" pos="0 0 0.0584" quat="0 0 0 1">
-        <inertial mass="0.015" pos="0 0 0" diaginertia="2.375e-6 2.375e-6 7.5e-7"/>
-        <geom mesh="finger_0" material="off_white_trans" class="visual" contype="0" conaffinity="0" />
-        <geom mesh="finger_1" material="black_trans" class="visual" contype="0" conaffinity="0" />
-        <geom mesh="finger_0" class="collision" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_1" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_2" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_3" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_4" contype="0" conaffinity="0" />
-        <geom class="fingertip_pad_collision_5" contype="0" conaffinity="0" />
-      </body>
-    </body>
+    <!-- hand_copy mocap body now comes from fr3_yeshand.xml (was inline here
+         when using panda_modified.xml; that inline copy conflicts with the
+         fr3_yeshand-provided one). -->
   </worldbody>
 
   <contact>
@@ -208,10 +170,14 @@
 
     <framepos name="trace0" objtype="site" objname="hand_site"/>
 
-    <!-- WIP CHUNK 2: hand_force sensor -->
-    <force name="hand_force" site="hand_site"/>
+    <!-- hand_force sensor now provided by fr3_yeshand.xml (renamed from
+         ee_force). Removed inline declaration to avoid duplicate. -->
+    <!-- <force name="hand_force" site="hand_site"/> -->
   </sensor>
 
   <!-- modified from: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda -->
-  <include file="panda_modified.xml"/>
+  <!-- Use fr3_yeshand model (matches FM training kinematics — no extra hand
+       body rotation that panda_modified.xml adds). -->
+  <include file="fr3_yeshand.xml"/>
+  <!-- <include file="panda_modified.xml"/> -->
 </mujoco>
