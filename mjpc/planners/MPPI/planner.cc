@@ -16,6 +16,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <mutex>
 #include <shared_mutex>
 
@@ -60,8 +64,17 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
     noise_exploration[1] = model->numeric_data[se_adr+1];
   }
 
-  // set number of trajectories to rollout
+  // set number of trajectories to rollout. MJPC_TRAJECTORIES env var
+  // overrides task.xml for FlowMPPI-vs-MPPI sweep experiments.
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
+  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v > 0) {
+      num_trajectory_ = v;
+      std::fprintf(stderr,
+                   "[MPPI] MJPC_TRAJECTORIES override: N=%d\n", v);
+    }
+  }
 
   interpolation_ = GetNumberOrDefault(SplineInterpolation::kCubicSpline, model,
                                       "sampling_representation");
@@ -244,6 +257,46 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
 
   // stop timer
   rollouts_compute_time = GetDuration(rollouts_start);
+
+  // ----- Per-step diagnostic CSV (enabled via MJPC_MPPI_LOG=path.csv) -----
+  // Matches the column subset of FlowMPPI diag relevant for stock MPPI
+  // (no FM-side columns). sum_w is computed pre-normalization for comparability
+  // with FlowMPPI's sum_w_mppi.
+  {
+    static std::mutex log_mtx;
+    static std::ofstream log_ofs;
+    static bool log_inited = false;
+    static bool log_enabled = false;
+    std::lock_guard<std::mutex> lk(log_mtx);
+    if (!log_inited) {
+      log_inited = true;
+      const char* p = std::getenv("MJPC_MPPI_LOG");
+      if (p && p[0]) {
+        log_ofs.open(p, std::ios::out | std::ios::trunc);
+        if (log_ofs.is_open()) {
+          log_ofs << "time,N,min_cost,mean_cost,std_cost,sum_w,"
+                     "rollouts_ms,horizon_steps,knots\n";
+          log_enabled = true;
+          std::fprintf(stderr, "[MPPI] diag log -> %s\n", p);
+        }
+      }
+    }
+    if (log_enabled) {
+      double s = 0, ss = 0;
+      for (int i = 0; i < num_trajectory; ++i) {
+        double c = trajectory[i].total_return;
+        s += c; ss += c * c;
+      }
+      double mean_c = s / num_trajectory;
+      double var_c = std::max(0.0, ss / num_trajectory - mean_c * mean_c);
+      log_ofs << time << ',' << num_trajectory << ','
+              << min_return_cost << ',' << mean_c << ','
+              << std::sqrt(var_c) << ',' << sum_weights << ','
+              << (rollouts_compute_time * 1e-3) << ','
+              << horizon << ','
+              << policy.num_spline_points << '\n';
+    }
+  }
 
   return 0;
 }

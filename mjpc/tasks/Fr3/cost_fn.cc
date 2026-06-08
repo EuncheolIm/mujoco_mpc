@@ -16,6 +16,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+
+#include "mjpc/timing_globals.h"
 
 #include <mujoco/mujoco.h>
 #include "mjpc/tasks/Fr3/dynamics.h"
@@ -31,6 +34,11 @@ namespace {
 }  // namespace
 
 int CostPosition(const mjModel* model, const mjData* data, double* residual) {
+  // SCALE env multiplies the residual (effective weight = task * SCALE^2).
+  static double scale = []() {
+    if (const char* e = std::getenv("MJPC_POS_SCALE"); e && e[0]) return std::atof(e);
+    return 1.0;
+  }();
   // Hybrid xy tracking. Target = hand_target sensor (mocap-based).
   double* hand = SensorByName(model, data, "hand");
   double* sensor_target = SensorByName(model, data, "hand_target");
@@ -51,16 +59,27 @@ int CostPosition(const mjModel* model, const mjData* data, double* residual) {
     }
   }
 
-  // Hybrid mode: xy via CostPosition, z via CostForce. residual[2] = 0
-  // so position cost only owns the xy plane.
-  residual[0] = hand[0] - tx;
-  residual[1] = hand[1] - ty;
-  residual[2] = 0.0;
+  // Phase 1 (approach, userdata[3] < 0.5): full 3D position toward
+  //   (mocap_x, mocap_y, approach_z) — gentle descent above table.
+  // Phase 2 (hybrid, userdata[3] >= 0.5): xy only here, z owned by CostForce.
+  bool hybrid = (model->nuserdata >= 4 && data->userdata[3] >= 0.5);
+  residual[0] = scale * (hand[0] - tx);
+  residual[1] = scale * (hand[1] - ty);
+  if (hybrid) {
+    residual[2] = 0.0;
+  } else {
+    double approach_z = mjpc::GetNumberOrDefault(0.35, model, "approach_z");
+    residual[2] = scale * (hand[2] - approach_z);
+  }
   return 3;
 }
 
 int CostOrientation(const mjModel* model, const mjData* data,
                     double* residual) {
+  static double scale = []() {
+    if (const char* e = std::getenv("MJPC_ORI_SCALE"); e && e[0]) return std::atof(e);
+    return 1.0;
+  }();
   double* hand_quat = SensorByName(model, data, "hand_orient");
   double* target_quat = SensorByName(model, data, "hand_target_orient");
 
@@ -73,7 +92,7 @@ int CostOrientation(const mjModel* model, const mjData* data,
   double err_axis_angle[3];
   mju_quat2Vel(err_axis_angle, err_quat, 1.0);
 
-  mju_copy3(residual, err_axis_angle);
+  for (int i = 0; i < 3; ++i) residual[i] = scale * err_axis_angle[i];
   return 3;
 }
 
@@ -95,6 +114,32 @@ int CostJointCentralize(const mjModel* model, const mjData* data,
   }
 
   mju_mulMatVec(residual, N, dq, 7, 7);
+
+  // Optional hard joint-limit penalty (MJPC_JOINT_LIMIT_PENALTY=1) — mirrors
+  // CUDA MPPI_tau.cu where `cost_q[j] = 1e7` when q outside [q_min, q_max].
+  // residual[i] is overridden so that (weight * residual[i]^2) ≈ target.
+  // With joint_cent task weight w=20 (or 1000), residual[i] = sqrt(1e7 / w).
+  static bool limit_penalty = []() {
+    if (const char* e = std::getenv("MJPC_JOINT_LIMIT_PENALTY"); e && e[0]) {
+      std::string v = e;
+      return v == "1" || v == "true" || v == "on" || v == "yes";
+    }
+    return false;
+  }();
+  if (limit_penalty) {
+    constexpr double kPenaltyTarget = 1.0e7;
+    // Default weight 20 (xml default); penalty residual ≈ 707.
+    // If task.xml changes weight, the squared product still dominates.
+    constexpr double kPenaltyResidual = 707.0;  // sqrt(1e7/20)
+    for (int i = 0; i < 7; ++i) {
+      double qmin = model->jnt_range[i * 2 + 0];
+      double qmax = model->jnt_range[i * 2 + 1];
+      if (q[i] < qmin || q[i] > qmax) {
+        residual[i] = kPenaltyResidual;
+      }
+    }
+    (void)kPenaltyTarget;
+  }
   return 7;
 }
 
@@ -119,32 +164,35 @@ int CostJointVelocity(const mjModel* model, const mjData* data,
   return 7;
 }
 
-int CostForce(const mjModel* model, const mjData* data, double* residual) {
-  // Two force-tracking signals are computed below:
-  //   1) F_press_z = (R · F_sensor)_z − m·g  — actual contact reaction force
-  //                                            (lives only when contact occurs)
-  //   2) F_task   = J#^T · (τ − qfrc_bias)   — operational-space "intent"
-  //                                            wrench (lives even free-space)
-  // The residual line at the end picks which one is used. F_press_z is kept
-  // as the default to avoid the divergence from F_task’s unreachable −10 N
-  // set point in free space.
-  residual[0] = 0.0;
-  residual[1] = 0.0;
-  residual[2] = 0.0;
+namespace {
+// Shared hinge params (used by both cost variants).
+double GetFMax() {
+  static double v = []() {
+    if (const char* e = std::getenv("MJPC_F_MAX"); e && e[0]) return std::atof(e);
+    return 15.0;
+  }();
+  return v;
+}
+double GetFScale() {
+  static double v = []() {
+    if (const char* e = std::getenv("MJPC_FORCE_SCALE"); e && e[0]) return std::atof(e);
+    return 1.0;
+  }();
+  return v;
+}
+bool InHybridPhase(const mjModel* model, const mjData* data) {
+  return (model->nuserdata >= 4 && data->userdata[3] >= 0.5);
+}
+}  // namespace
 
+// MPPI baseline: F_task tracking cost.
+//   residual = f_scale * (F_des[2] - F_task[2])
+//   F_task = J#^T · (τ − qfrc_bias) — heavy compute (Jacobian + Inertia).
+int CostForce_FTask(const mjModel* model, const mjData* data, double* residual) {
+  residual[0] = residual[1] = residual[2] = 0.0;
   if (model->nv < 7) return 3;
+  if (!InHybridPhase(model, data)) return 3;
 
-  // (1) F_press_z: gravity-bias-removed real reaction force.
-  double* F_sensor = SensorByName(model, data, "hand_force");
-  if (!F_sensor) return 3;
-  int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
-  if (sid < 0) return 3;
-  const double* R = data->site_xmat + 9 * sid;
-  double F_world_z = R[6] * F_sensor[0] + R[7] * F_sensor[1] + R[8] * F_sensor[2];
-  double mg = mjpc::GetNumberOrDefault(7.46, model, "ee_weight_N");
-  double F_press_z = F_world_z - mg;
-
-  // (2) F_task: intent wrench from the dynamically-consistent Jacobian.
   double jacp[3 * 7], jacr[3 * 7];
   GetHandManipulatorJacobian(model, data, jacp, jacr);
   double M[49];
@@ -157,17 +205,26 @@ int CostForce(const mjModel* model, const mjData* data, double* residual) {
   }
   double F_task[6];
   mju_mulMatVec(F_task, JdynT, tau_ext, 6, 7);
-  // Guard: if M / J# computation degenerated (singular config or qM not yet
-  // populated), fall back to 0 so residual stays finite. NaN here would
-  // poison MPPI softmax via NaN costs.
   if (!std::isfinite(F_task[2])) F_task[2] = 0.0;
 
   int id = mj_name2id(model, mjOBJ_NUMERIC, "F_des");
   const double* F_des = model->numeric_data + model->numeric_adr[id];
+  residual[2] = GetFScale() * (F_des[2] - F_task[2]);
+  return 3;
+}
 
-  // Symmetric force cost (restored from asymmetric test).
-  residual[2] = F_des[2] - F_task[2];
-  (void)F_press_z;
+// FlowMPPI / FMOnly: upper-bound hinge cost.
+//   residual = f_scale * max(0, F_press_z - f_max)
+//   Sensor-only read — NO Jacobian / Inertia compute.
+int CostForce_Hinge(const mjModel* model, const mjData* data, double* residual) {
+  residual[0] = residual[1] = residual[2] = 0.0;
+  if (model->nv < 7) return 3;
+  if (!InHybridPhase(model, data)) return 3;
+
+  double* F_sensor = SensorByName(model, data, "hand_force");
+  if (!F_sensor) return 3;
+  double F_press_z = F_sensor[2];
+  residual[2] = GetFScale() * std::max(0.0, F_press_z - GetFMax());
   return 3;
 }
 
@@ -175,6 +232,44 @@ int CostControl(const mjModel* model, const mjData* data, double* residual) {
   const double* tau = data->ctrl;
   for (int i = 0; i < 7; i++) {
     residual[i] = tau[i];
+  }
+  return 7;
+}
+
+int CostFMTrack(const mjModel* model, const mjData* data, double* residual) {
+  // residual = SCALE * (qpos[0..6] - q_fm_target).
+  // task.xml's FM_track cost weight is fixed; env var MJPC_FM_TRACK_SCALE
+  // multiplies the residual for sweep experiments (effective weight =
+  // task_weight * SCALE^2 after the framework squares).
+  // SCALE default 0 (FM track cost disabled) — only active when env var is
+  // explicitly set. This prevents the cost from anchoring MPPI baselines to
+  // q_fm_target's task.xml default (HOME_Q) when FlowMPPI is not the planner
+  // (FlowMPPI is the only place that updates q_fm_target at runtime).
+  static double scale = []() {
+    if (const char* e = std::getenv("MJPC_FM_TRACK_SCALE"); e && e[0]) {
+      return std::atof(e);
+    }
+    return 0.0;
+  }();
+  if (scale == 0.0) {
+    for (int i = 0; i < 7; ++i) residual[i] = 0.0;
+    return 7;
+  }
+  // Stage 1 gate: skip residual until PublishFMTarget has written a real FM
+  // chunk. Otherwise q_fm_target is task.xml default (HOME_Q) which anchors
+  // the robot to HOME while CostPosition tries to descend → jitter.
+  if (!::mjpc::g_qfm_valid.load(std::memory_order_relaxed)) {
+    for (int i = 0; i < 7; ++i) residual[i] = 0.0;
+    return 7;
+  }
+  int id = mj_name2id(model, mjOBJ_NUMERIC, "q_fm_target");
+  if (id < 0) {
+    for (int i = 0; i < 7; ++i) residual[i] = 0.0;
+    return 7;
+  }
+  const double* q_target = model->numeric_data + model->numeric_adr[id];
+  for (int i = 0; i < 7; ++i) {
+    residual[i] = scale * (data->qpos[i] - q_target[i]);
   }
   return 7;
 }

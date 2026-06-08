@@ -36,8 +36,11 @@ int CostJointCentralize(const mjModel* model, const mjData* data,
 int CostJointVelocity(const mjModel* model, const mjData* data,
                       double* residual);
 
-// Task-space force tracking error: F_des - F_task (3).
-int CostForce(const mjModel* model, const mjData* data, double* residual);
+// Force cost (3). Caller (fr3.cc) selects between two variants by planner_id:
+//   CostForce_FTask: MPPI baseline (heavy: Jacobian + Inertia + F_task tracking).
+//   CostForce_Hinge: FlowMPPI / FMOnly (light: sensor read + hinge).
+int CostForce_FTask(const mjModel* model, const mjData* data, double* residual);
+int CostForce_Hinge(const mjModel* model, const mjData* data, double* residual);
 
 // Control effort: tau (7).
 int CostControl(const mjModel* model, const mjData* data, double* residual);
@@ -45,6 +48,12 @@ int CostControl(const mjModel* model, const mjData* data, double* residual);
 // EE +z velocity penalty (1): residual = max(0, ee_z_vel).
 // Discourages the lift transient without restricting press-down motion.
 int CostEEVelZ(const mjModel* model, const mjData* data, double* residual);
+
+// FM joint-target tracking (7). residual[i] = qpos[i] - q_fm_target[i],
+// where q_fm_target is published into the model's 'q_fm_target' numeric
+// by FlowMPPIPlanner::UpdateFM (option E — FM-as-cost-bias). Zero residual
+// if the numeric is absent.
+int CostFMTrack(const mjModel* model, const mjData* data, double* residual);
 
 }  // namespace mjpc::fr3
 

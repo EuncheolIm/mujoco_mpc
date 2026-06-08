@@ -32,9 +32,13 @@ void SamplingPolicy::Allocate(const mjModel* model, const Task& task,
   // model
   this->model = model;
 
-  // spline points
+  // spline points — MJPC_KNOTS env var overrides task.xml for sweep.
   num_spline_points = GetNumberOrDefault(kMaxTrajectoryHorizon, model,
                                          "sampling_spline_points");
+  if (const char* e = std::getenv("MJPC_KNOTS"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v > 0) num_spline_points = v;
+  }
 
   plan = TimeSpline(/*dim=*/model->nu);
   plan.Reserve(num_spline_points);

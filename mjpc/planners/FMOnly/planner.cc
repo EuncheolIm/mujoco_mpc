@@ -86,6 +86,13 @@ void FMOnlyPlanner::Initialize(mjModel* model, const Task& task) {
 
   // set number of trajectories to rollout
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
+  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v > 0) {
+      num_trajectory_ = v;
+      std::fprintf(stderr, "[FMOnly] MJPC_TRAJECTORIES override: N=%d\n", v);
+    }
+  }
 
   interpolation_ = GetNumberOrDefault(SplineInterpolation::kCubicSpline, model,
                                       "sampling_representation");
@@ -297,14 +304,11 @@ void FMOnlyPlanner::ActionFromPolicy(double* action, const double* state,
       spline_fallback();
       return;
     }
-    int H = (int)q_d_traj_cached_.size();
-    int idx = std::max(0, std::min(fmc.chunk_idx, H - 1));
-    q_d = q_d_traj_cached_[idx];
-    if (fmc.vel_ff && idx + 1 < H) {
-      qdot_d = (q_d_traj_cached_[idx + 1] - q_d_traj_cached_[idx]) / fmc.fm_chunk_dt;
-    } else if (fmc.vel_ff && idx > 0) {
-      qdot_d = (q_d_traj_cached_[idx] - q_d_traj_cached_[idx - 1]) / fmc.fm_chunk_dt;
-    }
+    // FMOnly always uses TE-on semantics (eval_mocap_follow_v24_tuned --te_on):
+    //   idx=0 (current-time blend), qdot_d=0 (no vel_ff).
+    // yaml's no_temporal_ensemble + chunk_idx + vel_ff govern FlowMPPI only.
+    q_d = q_d_traj_cached_[0];
+    // qdot_d stays at zeros (no vel_ff) — set above.
   }
 
   // Populate act_data_ with current sim state for qfrc_bias.
@@ -739,11 +743,13 @@ void FMOnlyPlanner::UpdateFM() {
         fm_policy_ = std::make_unique<ONNXPolicy>(fmc.fm_checkpoint,
                                                   fmc.fm_stats);
         if (fm_policy_->isLoaded()) {
+          fm_policy_->setNumOdeSteps(fmc.fm_ode_steps);
           fm_policy_->startFMThread();
           fm_loaded_ = true;
-          std::printf("[FMOnly] FM loaded: state=%d action=%d horizon=%d\n",
+          std::printf("[FMOnly] FM loaded: state=%d action=%d horizon=%d "
+                      "ode_steps=%d\n",
                       fm_policy_->getStateDim(), fm_policy_->getActionDim(),
-                      fm_policy_->getHorizon());
+                      fm_policy_->getHorizon(), fmc.fm_ode_steps);
         } else {
           fm_policy_.reset();
         }
@@ -855,7 +861,7 @@ void FMOnlyPlanner::UpdateFM() {
 
 
   if (!prev_init_) {
-    prev_state_  = Eigen::VectorXd::Zero(sd);
+    prev_state_  = s_vec;  // match eval_circle_v24: prev_state = state.copy()
     prev_action_ = Eigen::VectorXd::Zero(ad);
     for (int i = 0; i < 7; ++i) prev_action_(i) = ws_data_->qpos[i];
     prev_init_ = true;
@@ -896,7 +902,9 @@ void FMOnlyPlanner::UpdateFM() {
     const int H = (int)te_chunks_.back().size();
     std::vector<Eigen::VectorXd> q_d_traj(H, Eigen::VectorXd::Zero(7));
     const FMConfig& fmc_te = GetFMConfig();
-    if (fmc_te.no_temporal_ensemble) {
+    // FMOnly: always TE on (matches eval_mocap_follow_v24_tuned --te_on).
+    // yaml's no_temporal_ensemble governs FlowMPPI only.
+    if (false) {
       // Use latest chunk only (eval_circle_v24 --no_ensemble mode).
       const auto& last = te_chunks_.back();
       for (int h = 0; h < H && h < (int)last.size(); ++h) q_d_traj[h] = last[h];
@@ -931,8 +939,12 @@ void FMOnlyPlanner::UpdateFM() {
   }
 
   prev_state_ = s_vec;
+  // Match eval_circle_v24: prev_action = q_target = chunk[chunk_idx], not chunk[0].
   if (!te_chunks_.empty() && !te_chunks_.back().empty()) {
-    prev_action_ = te_chunks_.back()[0];
+    const FMConfig& fmc_pa = GetFMConfig();
+    int H_pa = (int)te_chunks_.back().size();
+    int idx_pa = std::max(0, std::min(fmc_pa.chunk_idx, H_pa - 1));
+    prev_action_ = te_chunks_.back()[idx_pa];
   }
 }
 

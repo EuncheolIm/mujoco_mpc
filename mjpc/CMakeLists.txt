@@ -182,6 +182,8 @@ add_library(
   norm.h
   policies/onnx_policy.cc
   policies/onnx_policy.h
+  policies/mlp_policy.cc
+  policies/mlp_policy.h
   simulate.cc
   simulate.h
   task.cc
@@ -327,6 +329,19 @@ if(MJPC_HAS_ONNXRUNTIME)
   target_link_libraries(fm_closed_loop_test libmjpc mujoco::mujoco glfw Threads::Threads)
   target_include_directories(fm_closed_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 endif()
+
+# Hybrid Impedance wipe test — verifies whether mujoco contact model can
+# sustain table contact with a hand-tuned operational-space controller
+# (no MPC, no FM). Useful for separating "solref/solimp problem" from
+# "MPPI sampling problem" in the contact-sustain analysis.
+add_executable(impedance_wipe_test policies/impedance_wipe_test.cc)
+target_link_libraries(impedance_wipe_test libmjpc mujoco::mujoco glfw Threads::Threads)
+target_include_directories(impedance_wipe_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+# Standalone TimeSpline copy semantics test (FlowMPPI leak diagnosis)
+add_executable(spline_copy_test spline/spline_copy_test.cc)
+target_link_libraries(spline_copy_test libmjpc)
+target_include_directories(spline_copy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
 target_compile_options(testspeed PUBLIC ${MJPC_COMPILE_OPTIONS})
 target_link_options(testspeed PRIVATE ${MJPC_LINK_OPTIONS})
 target_compile_definitions(testspeed PRIVATE MJSIMULATE_STATIC)

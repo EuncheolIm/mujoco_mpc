@@ -29,6 +29,7 @@
 
 #include "mjpc/planners/planner.h"
 #include "mjpc/planners/FlowMPPI/policy.h"
+#include "mjpc/policies/mlp_policy.h"
 #include "mjpc/policies/onnx_policy.h"
 #include "mjpc/spline/spline.h"
 #include "mjpc/states/state.h"
@@ -80,7 +81,7 @@ class FlowMPPIPlanner : public RankedPlanner {
   void UpdateNominalPolicy(int horizon);
 
   // add noise to nominal policy
-  void AddNoiseToPolicy(double start_time, int i);
+  void AddNoiseToPolicy(double start_time, int i, double scale = 1.0);
 
   // compute candidate trajectories
   void Rollouts(int num_trajectory, int horizon, ThreadPool& pool);
@@ -132,12 +133,28 @@ class FlowMPPIPlanner : public RankedPlanner {
   FlowMPPIPolicy candidate_policy[kMaxTrajectory];
   FlowMPPIPolicy previous_policy;
 
-  // Separate FM-driven nominal. ApplyWarmstart writes FM-derived τ into
-  // fm_nominal_.plan instead of overwriting policy.plan, so MPPI's prior
-  // optimum is preserved as an independent nominal. Rollouts then sample
-  // half around fm_nominal_ and half around policy; a single softmax over
-  // all rollouts combines them via importance weights.
+  // Two persistent nominals, evolved independently across planning steps:
+  //   - mppi_nominal_  : stock-MPPI shifted prior optimum. Updated each step
+  //                      by UpdateNominalPolicy (resample/shift) and then by
+  //                      the MPPI-group weighted-average. Survives FM-winner
+  //                      steps so the MPPI exploration accumulates over time.
+  //   - fm_nominal_    : FM PD-derived nominal. Reseeded from mppi_nominal_
+  //                      every step (so spline structure matches) and then
+  //                      knot τ values overwritten by ApplyWarmstart.
+  // policy.plan = winner group's weighted-average; consumed by ActionFromPolicy
+  // (actuator output). It is NOT used as the base for next step's MPPI
+  // sampling — mppi_nominal_ is. This decouples the actuator command from
+  // the MPPI memory.
+  FlowMPPIPolicy mppi_nominal_;
   FlowMPPIPolicy fm_nominal_;
+
+  // Most recent winner-group flag (diagnostic). True if last optimization
+  // step picked the FM group's weighted-average as policy.plan.
+  bool last_winner_was_fm_ = false;
+
+  // Snapshot of mppi_nominal_.plan from the previous OptimizePolicyCandidates
+  // call, used for diagnostic L2-distance logging.
+  mjpc::spline::TimeSpline prev_mppi_nominal_plan_;
 
   // scratch
   mjpc::spline::TimeSpline plan_scratch;
@@ -208,6 +225,14 @@ mjpc::spline::SplineInterpolation interpolation_ =
   std::unique_ptr<ONNXPolicy> fm_policy_;
   bool fm_loaded_ = false;
   bool fm_tried_  = false;
+  // MLP student guide (optional, selected via FMConfig::guide_type=="mlp").
+  // Lazy-loaded inside UpdateFM the same way fm_policy_ is. When active,
+  // populates q_d_traj_cached_ via a single ONNX forward (no ODE loop, no
+  // async thread). On load failure, the guide is left disabled and
+  // CostFMTrack receives g_qfm_valid=false → zero residual.
+  std::unique_ptr<MLPGuidePolicy> mlp_policy_;
+  bool mlp_loaded_ = false;
+  bool mlp_tried_  = false;
   std::deque<std::vector<Eigen::VectorXd>> te_chunks_;
   Eigen::VectorXd prev_state_;
   Eigen::VectorXd prev_action_;
@@ -218,6 +243,10 @@ mjpc::spline::SplineInterpolation interpolation_ =
   double qdot_start_[7] = {0,0,0,0,0,0,0};
   bool ws_valid_ = false;
   double ws_last_time_ = -1.0;
+  // Time when the most recent FM chunk was received (push to te_chunks_).
+  // Used by fm_chunk_advance mode to compute the time-shifted q_fm_target
+  // index. Reset implicitly each time a fresh chunk arrives.
+  double last_chunk_recv_time_ = -1.0;
   std::mutex ws_mutex_;
   int hand_site_id_ = -1;
   int target_site_id_ = -1;
@@ -228,6 +257,10 @@ mjpc::spline::SplineInterpolation interpolation_ =
   // Compute τ warm-start onto policy.plan knots using cached q_d trajectory
   // and PD+ID forward-propagation.
   void ApplyWarmstart();
+  // Publish current q_fm_target to model->numeric_data["q_fm_target"].
+  // Called every plan iteration (outside UpdateFM throttle) so the cost
+  // residual sees a time-shifted q_d (fm_chunk_advance mode).
+  void PublishFMTarget();
 };
 
 }  // namespace mjpc

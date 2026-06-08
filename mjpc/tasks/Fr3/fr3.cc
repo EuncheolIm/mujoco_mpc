@@ -24,12 +24,30 @@
 #include "mjpc/task.h"
 #include "mjpc/tasks/Fr3/cost_fn.h"
 #include "mjpc/tasks/Fr3/dynamics.h"
+#include "mjpc/timing_globals.h"
 #include "mjpc/utilities.h"
 
 namespace mjpc {
 
 std::string FR3::XmlPath() const { return GetModelPath("Fr3/task.xml"); }
 std::string FR3::Name() const { return "MPPI_Force"; }
+
+namespace {
+// Cache MJPC_PLANNER env var once per process. 0 = MPPI baseline (uses F_task
+// tracking), else = FlowMPPI / FMOnly (uses sensor hinge).
+int GetPlannerId() {
+  static int id = []() {
+    if (const char* e = std::getenv("MJPC_PLANNER"); e && e[0]) return std::atoi(e);
+    return -1;
+  }();
+  return id;
+}
+inline int CallCostForce(const mjModel* model, const mjData* data, double* r) {
+  return (GetPlannerId() == 0)
+      ? fr3::CostForce_FTask(model, data, r)
+      : fr3::CostForce_Hinge(model, data, r);
+}
+}  // namespace
 
 void FR3::ResidualFn::Residual(const mjModel* model, const mjData* data,
                                double* residual) const {
@@ -38,9 +56,11 @@ void FR3::ResidualFn::Residual(const mjModel* model, const mjData* data,
   counter += fr3::CostOrientation(model, data, residual + counter);
   counter += fr3::CostJointCentralize(model, data, residual + counter);
   counter += fr3::CostJointVelocity(model, data, residual + counter);
-  counter += fr3::CostForce(model, data, residual + counter);
+  counter += CallCostForce(model, data, residual + counter);
+
   counter += fr3::CostControl(model, data, residual + counter);
   counter += fr3::CostEEVelZ(model, data, residual + counter);
+  counter += fr3::CostFMTrack(model, data, residual + counter);
 
   // Sensor dim sanity check.
   int user_sensor_dim = 0;
@@ -77,7 +97,9 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
             "rf_z,"                  // CostForce residual (z component)
             "rjc_1,rjc_2,rjc_3,rjc_4,rjc_5,rjc_6,rjc_7,"   // joint_cent
             "rjv_1,rjv_2,rjv_3,rjv_4,rjv_5,rjv_6,rjv_7,"   // joint_vel
-            "rc_1,rc_2,rc_3,rc_4,rc_5,rc_6,rc_7\n");       // u_reg (ctrl)
+            "rc_1,rc_2,rc_3,rc_4,rc_5,rc_6,rc_7,"          // u_reg (ctrl)
+            "plan_ms,fm_ms,"                               // timing (latency, FM async)
+            "qfm1,qfm2,qfm3,qfm4,qfm5,qfm6,qfm7\n");       // q_fm_target (FM target in joint space)
       }
     }
     csv_inited = true;
@@ -131,11 +153,17 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
         fr3::CostOrientation(model, data, ro);
         fr3::CostJointCentralize(model, data, rjc);
         fr3::CostJointVelocity(model, data, rjv);
-        fr3::CostForce(model, data, rf);
+        CallCostForce(model, data, rf);
         fr3::CostControl(model, data, rc);
         const double* qp = data->qpos;
         const double* qv = data->qvel;
 
+        double plan_ms = mjpc::g_plan_time_ms.load(std::memory_order_relaxed);
+        double fm_ms   = mjpc::g_fm_inference_ms.load(std::memory_order_relaxed);
+        double qfm[7];
+        for (int j = 0; j < 7; ++j) {
+          qfm[j] = mjpc::g_qfm_target[j].load(std::memory_order_relaxed);
+        }
         std::fprintf(csv_file,
             "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,"
             "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
@@ -145,6 +173,8 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
             "%.5f,"
             "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
             "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+            "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+            "%.4f,%.4f,"
             "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f\n",
             data->time, F[0], F[1], F[2], F_task_z,
             ee_x, ee_y, ee_z, tgt_x, tgt_y, tgt_z, hybrid,
@@ -155,11 +185,13 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
             rf[2],
             rjc[0], rjc[1], rjc[2], rjc[3], rjc[4], rjc[5], rjc[6],
             rjv[0], rjv[1], rjv[2], rjv[3], rjv[4], rjv[5], rjv[6],
-            rc[0], rc[1], rc[2], rc[3], rc[4], rc[5], rc[6]);
+            rc[0], rc[1], rc[2], rc[3], rc[4], rc[5], rc[6],
+            plan_ms, fm_ms,
+            qfm[0], qfm[1], qfm[2], qfm[3], qfm[4], qfm[5], qfm[6]);
         std::fflush(csv_file);
       }
     }
-    next_log_time = data->time + 0.1;
+    next_log_time = data->time + model->opt.timestep;  // log every sim step
   }
 
   // Auto-trajectory: lerp mocap_pos from the EE site pose at q_home (or the
@@ -174,8 +206,9 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
   if (!traj_init_ || data->time < traj_t0_) {
     traj_t0_ = data->time;
     traj_reach_time_ = -1.0;
-    // Start directly in hybrid mode — no approach phase / mode switch.
-    if (model->nuserdata >= 4) data->userdata[3] = 1.0;
+    // Phase-gated start: approach mode (userdata[3]=0). 3D position control
+    // toward (mocap_x, mocap_y, approach_z) until reach + delay → hybrid (=1).
+    if (model->nuserdata >= 4) data->userdata[3] = 0.0;
     // userdata[4] = wipe origin time. -1 = wipe not started.
     if (model->nuserdata >= 5) data->userdata[4] = -1.0;
 
@@ -247,6 +280,47 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
 
   double t_traj = data->time - traj_t0_;
 
+  // ============ Phase 1 (approach) → Phase 2 (hybrid) gate ============
+  // While in approach mode, check if EE is within `hybrid_switch_dist` of
+  // (mocap_x, mocap_y, approach_z). After dwelling there for
+  // `hybrid_switch_delay` seconds, flip userdata[3] = 1 (hybrid).
+  if (model->nuserdata >= 4 && data->userdata[3] < 0.5) {
+    double approach_z = GetNumberOrDefault(0.35, model, "approach_z");
+    double dist_thr   = GetNumberOrDefault(0.02, model, "hybrid_switch_dist");
+    double delay      = GetNumberOrDefault(0.5,  model, "hybrid_switch_delay");
+    int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
+    if (sid >= 0) {
+      const double* xp = data->site_xpos + 3 * sid;
+      double dx = xp[0] - data->mocap_pos[0];
+      double dy = xp[1] - data->mocap_pos[1];
+      double dz = xp[2] - approach_z;
+      double d  = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if (d < dist_thr) {
+        if (traj_reach_time_ < 0) traj_reach_time_ = data->time;
+        else if (data->time - traj_reach_time_ > delay) {
+          data->userdata[3] = 1.0;  // switch to hybrid
+        }
+      } else {
+        traj_reach_time_ = -1.0;  // drifted out, reset
+      }
+    }
+  }
+
+  // Phase-dependent mocap visualization:
+  //   approach (phase 1): hand_copy site shown at (mocap_x, mocap_y, approach_z)
+  //   hybrid  (phase 2): hand_copy site shown at (mocap_x, mocap_y, table_top)
+  // hand_copy mocap has quat (0,1,0,0) which flips +z → -z; the site is at
+  // body-local (0,0,0.214) → world z = mocap_pos_z - 0.214. So to show site
+  // at world z=Z, set mocap_pos_z = Z + 0.214.
+  if (model->nuserdata >= 4) {
+    double approach_z = GetNumberOrDefault(0.35, model, "approach_z");
+    if (data->userdata[3] < 0.5) {
+      data->mocap_pos[2] = approach_z + 0.214;
+    } else {
+      data->mocap_pos[2] = traj_final_mocap_[2];  // = table_top + 0.214
+    }
+  }
+
   // Wiping (polishing) phase. Pattern from .cu test.py:
   //   x = start + r·(cosθ−1), y = start + r·sinθ, ω = 2 rad/s → period = π
   //   wipe_stabilize  — sec after start before wipe begins (5.0s)
@@ -255,7 +329,18 @@ void FR3::TransitionLocked(mjModel* model, mjData* data) {
   double wipe_stab    = GetNumberOrDefault(5.0, model, "wipe_stabilize");
   double wipe_radius  = GetNumberOrDefault(0.05, model, "wipe_radius");
   double wipe_period  = GetNumberOrDefault(3.14159265358979, model, "wipe_period");
-  if (t_traj > wipe_stab && wipe_period > 1e-6) {
+  // TEMP: MJPC_NO_WIPE=1 disables the circular wipe so the user can drag the
+  // mocap target manually and the EE follows it. Independent of planner —
+  // set before launching mjpc when you want manual-target mode.
+  static const bool wipe_enabled = []() {
+    if (const char* e = std::getenv("MJPC_NO_WIPE"); e && e[0]) {
+      std::string v = e;
+      return !(v == "1" || v == "true" || v == "yes" || v == "on");
+    }
+    return true;
+  }();
+
+  if (wipe_enabled && t_traj > wipe_stab && wipe_period > 1e-6) {
     double t_w = t_traj - wipe_stab;
     double w = 2.0 * 3.14159265358979 / wipe_period;
     double theta = w * t_w;

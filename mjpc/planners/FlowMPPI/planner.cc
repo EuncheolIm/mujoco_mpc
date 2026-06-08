@@ -20,9 +20,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <xmmintrin.h>   // _mm_getcsr / _mm_setcsr (SSE MXCSR)
+#include <pmmintrin.h>   // _MM_SET_DENORMALS_ZERO_MODE
+#include <fenv.h>
 
 #include <absl/random/random.h>
 #include <eigen3/Eigen/Dense>
@@ -36,6 +40,7 @@
 #include "mjpc/states/state.h"
 #include "mjpc/task.h"
 #include "mjpc/threadpool.h"
+#include "mjpc/timing_globals.h"
 #include "mjpc/trajectory.h"
 #include "mjpc/utilities.h"
 
@@ -82,6 +87,14 @@ void FlowMPPIPlanner::Initialize(mjModel* model, const Task& task) {
 
   // set number of trajectories to rollout
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
+  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v > 0) {
+      num_trajectory_ = v;
+      std::fprintf(stderr,
+                   "[FlowMPPI] MJPC_TRAJECTORIES override: N=%d\n", v);
+    }
+  }
 
   interpolation_ = GetNumberOrDefault(SplineInterpolation::kCubicSpline, model,
                                       "sampling_representation");
@@ -92,8 +105,16 @@ void FlowMPPIPlanner::Initialize(mjModel* model, const Task& task) {
                 kMaxTrajectory);
   }
 
-  // MPPI temperature (default if numeric absent).
+  // MPPI temperature (default if numeric absent). MJPC_LAMBDA env var
+  // overrides task.xml's sampling_lambda when set, for quick sweeps.
   mppi_lambda_ = GetNumberOrDefault(1.0, model, "sampling_lambda");
+  if (const char* e = std::getenv("MJPC_LAMBDA"); e && e[0]) {
+    double v = std::atof(e);
+    if (v > 0) {
+      mppi_lambda_ = v;
+      std::fprintf(stderr, "[FlowMPPI] MJPC_LAMBDA override: lambda=%g\n", v);
+    }
+  }
 
   // DC-per-rollout noise: if 1, one Gaussian per (rollout, joint) broadcast
   // across all knots (reference tau-MPPI). If 0, each knot independent.
@@ -132,8 +153,10 @@ void FlowMPPIPlanner::Allocate() {
   // policy
   policy.Allocate(model, *task, kMaxTrajectoryHorizon);
   previous_policy.Allocate(model, *task, kMaxTrajectoryHorizon);
+  mppi_nominal_.Allocate(model, *task, kMaxTrajectoryHorizon);
   fm_nominal_.Allocate(model, *task, kMaxTrajectoryHorizon);
   plan_scratch = TimeSpline(/*dim=*/model->nu);
+  prev_mppi_nominal_plan_ = TimeSpline(/*dim=*/model->nu);
 
   // noise
   noise.resize(kMaxTrajectory * (model->nu * kMaxTrajectoryHorizon));
@@ -166,7 +189,9 @@ void FlowMPPIPlanner::Reset(int horizon,
     const std::unique_lock<std::shared_mutex> lock(mtx_);
     policy.Reset(horizon, initial_repeated_action);
     previous_policy.Reset(horizon, initial_repeated_action);
+    mppi_nominal_.Reset(horizon, initial_repeated_action);
     fm_nominal_.Reset(horizon, initial_repeated_action);
+    prev_mppi_nominal_plan_.Clear();
   }
 
   // scratch
@@ -207,17 +232,31 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // resample nominal policy to current time
   this->UpdateNominalPolicy(horizon);
 
-  // FM warm-start: seed fm_nominal_ from the current MPPI nominal (so the
-  // spline structure / num_spline_points / times match), then overwrite its
-  // knot τ values from the FM q_d chunk. policy.plan (= MPPI nominal /
-  // shifted prior optimum) is left untouched so that half of the rollouts
-  // can still sample around it.
+  // Mode select.
+  //   "wta"  (default, legacy): ApplyWarmstart writes FM PD torques into
+  //          fm_nominal_.plan, FM-group rollouts use it, winner-take-all
+  //          per group. Known to leak (FM influences MPPI side via
+  //          mechanism still under investigation when ONNX is loaded).
+  //   "cost" (option E): no plan write. UpdateFM publishes q_fm_target
+  //          to the task's numeric data so the CostFMTrack residual biases
+  //          MPPI samples toward FM's q trajectory. Bypasses the leak path
+  //          entirely; FM influence is controlled by task.xml's FM_track
+  //          cost weight (sweepable).
+  // FM influence mode (default = cost):
+  //   "cost" → fm_cost_mode=true  → no warmstart, N_fm=0, FM via cost residual only (option E)
+  //   "wta"  → fm_cost_mode=false → warmstart applied, N_fm>0, softmax type from MJPC_FM_SOFTMAX
+  bool fm_cost_mode = true;
+  if (const char* e = std::getenv("MJPC_FM_MODE"); e && e[0]) {
+    fm_cost_mode = (std::string(e) == "cost");
+  }
+
   {
     const std::shared_lock<std::shared_mutex> lock(mtx_);
-    fm_nominal_.CopyFrom(policy, policy.num_spline_points);
+    fm_nominal_.CopyFrom(mppi_nominal_, mppi_nominal_.num_spline_points);
   }
-  UpdateFM();
-  ApplyWarmstart();
+  UpdateFM();          // throttled (chunk receive + TE blend)
+  PublishFMTarget();   // every iter (time-shifted q_fm_target)
+  if (!fm_cost_mode) ApplyWarmstart();
 
   // if num_trajectory_ has changed, use it in this new iteration.
   // num_trajectory_ might change while this function runs. Keep it constant
@@ -241,7 +280,36 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // lower cost is chosen as the new policy.plan. This avoids the chattering
   // that arises when very different nominals (FM-PD vs prior MPPI optimum)
   // are mixed into a single softmax.
-  const int N_fm = num_trajectory / 2;
+  //
+  // FM rollout fraction: default 0.5 (half each). MJPC_FM_FRAC env var (0..1)
+  // overrides — frac=0 ⇒ all MPPI (= stock-MPPI-equivalent group structure),
+  // frac=1 ⇒ all FM. Used for sweep experiments on FM/MPPI mix ratio.
+  double fm_frac = 0.5;
+  if (const char* e = std::getenv("MJPC_FM_FRAC"); e && e[0]) {
+    double v = std::atof(e);
+    if (v >= 0.0 && v <= 1.0) fm_frac = v;
+  }
+  // In cost mode the FM rollout group is disabled — all samples are MPPI
+  // samples around mppi_nominal_, and FM acts purely via the cost residual.
+  const int N_fm = fm_cost_mode
+      ? 0
+      : static_cast<int>(num_trajectory * fm_frac);
+  static bool printed_frac_ = false;
+  if (!printed_frac_) {
+    std::fprintf(stderr,
+                 "[FlowMPPI] fm_frac=%.3f  N_fm=%d  N_mppi=%d\n",
+                 fm_frac, N_fm, num_trajectory - N_fm);
+    printed_frac_ = true;
+  }
+
+  // Softmax type for wta mode (default = per_group):
+  //   "per_group" → per-group softmax + winner-take-all
+  //   "shared"    → single shared softmax across all rollouts
+  // Only meaningful when fm_cost_mode=false (i.e., MJPC_FM_MODE=wta).
+  bool shared_softmax = false;
+  if (const char* e = std::getenv("MJPC_FM_SOFTMAX"); e && e[0]) {
+    shared_softmax = (std::string(e) == "shared");
+  }
 
   double min_fm   = std::numeric_limits<double>::infinity();
   double min_mppi = std::numeric_limits<double>::infinity();
@@ -251,57 +319,206 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
     min_mppi = std::min(min_mppi, trajectory[i].total_return);
 
   double sum_w_fm = 0.0, sum_w_mppi = 0.0;
-  for (int i = 0; i < N_fm; ++i) {
-    weights[i] = std::exp(-(trajectory[i].total_return - min_fm) / mppi_lambda_);
-    sum_w_fm += weights[i];
+  if (shared_softmax) {
+    // Single softmax over ALL rollouts (FM + MPPI together).
+    double min_all = std::min(min_fm, min_mppi);
+    double sum_all = 0.0;
+    for (int i = 0; i < num_trajectory; ++i) {
+      weights[i] = std::exp(-(trajectory[i].total_return - min_all) / mppi_lambda_);
+      sum_all += weights[i];
+    }
+    if (sum_all > 0) for (int i = 0; i < num_trajectory; ++i) weights[i] /= sum_all;
+    // Bookkeeping for diag: split sums for logging (post-normalization).
+    for (int i = 0; i < N_fm; ++i)              sum_w_fm   += weights[i];
+    for (int i = N_fm; i < num_trajectory; ++i) sum_w_mppi += weights[i];
+  } else {
+    for (int i = 0; i < N_fm; ++i) {
+      weights[i] = std::exp(-(trajectory[i].total_return - min_fm) / mppi_lambda_);
+      sum_w_fm += weights[i];
+    }
+    for (int i = N_fm; i < num_trajectory; ++i) {
+      weights[i] = std::exp(-(trajectory[i].total_return - min_mppi) / mppi_lambda_);
+      sum_w_mppi += weights[i];
+    }
+    if (sum_w_fm   > 0) for (int i = 0; i < N_fm; ++i)               weights[i] /= sum_w_fm;
+    if (sum_w_mppi > 0) for (int i = N_fm; i < num_trajectory; ++i)  weights[i] /= sum_w_mppi;
   }
-  for (int i = N_fm; i < num_trajectory; ++i) {
-    weights[i] = std::exp(-(trajectory[i].total_return - min_mppi) / mppi_lambda_);
-    sum_w_mppi += weights[i];
-  }
-  if (sum_w_fm   > 0) for (int i = 0; i < N_fm; ++i)               weights[i] /= sum_w_fm;
-  if (sum_w_mppi > 0) for (int i = N_fm; i < num_trajectory; ++i)  weights[i] /= sum_w_mppi;
+
+  // Snapshot of MPPI nominal at start of this step (for diagnostic L2 vs the
+  // post-update mppi_nominal_).
+  TimeSpline mppi_nominal_pre = mppi_nominal_.plan;
 
   {  // <-- 잠금 시작
     const std::unique_lock<std::shared_mutex> lock(mtx_);
 
-    // Group FM: base = fm_nominal_.plan, accumulate w_i * (cand_i - fm_nominal_).
-    TimeSpline plan_fm = fm_nominal_.plan;
-    for (int i = 0; i < N_fm; ++i) {
-      for (int t = 0; t < fm_nominal_.plan.Size(); ++t) {
-        auto base_node = plan_fm.begin() + t;
-        auto pol_node  = fm_nominal_.plan.begin() + t;
-        auto cand_node = candidate_policy[i].plan.begin() + t;
-        for (int k = 0; k < model->nu; ++k) {
-          base_node->values()[k] +=
-              weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+    if (shared_softmax) {
+      // Single weighted-average across all N rollouts. Uses mppi_nominal_ as
+      // base; Σ w_i = 1 makes the result Σ w_i * candidate_i regardless of
+      // base. Both mppi_nominal_ and policy.plan get this result — FM
+      // samples now influence MPPI memory in proportion to their softmax
+      // weight rather than dominating via winner-take-all.
+      TimeSpline new_plan = mppi_nominal_.plan;
+      for (int i = 0; i < num_trajectory; ++i) {
+        for (int t = 0; t < mppi_nominal_.plan.Size(); ++t) {
+          auto base_node = new_plan.begin() + t;
+          auto pol_node  = mppi_nominal_.plan.begin() + t;
+          auto cand_node = candidate_policy[i].plan.begin() + t;
+          for (int k = 0; k < model->nu; ++k) {
+            base_node->values()[k] +=
+                weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+          }
         }
       }
-    }
-
-    // Group MPPI: base = policy.plan, accumulate w_i * (cand_i - policy).
-    TimeSpline plan_mppi = policy.plan;
-    for (int i = N_fm; i < num_trajectory; ++i) {
-      for (int t = 0; t < policy.plan.Size(); ++t) {
-        auto base_node = plan_mppi.begin() + t;
-        auto pol_node  = policy.plan.begin() + t;
-        auto cand_node = candidate_policy[i].plan.begin() + t;
-        for (int k = 0; k < model->nu; ++k) {
-          base_node->values()[k] +=
-              weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
-        }
-      }
-    }
-
-    // Winner-take-all: pick the group whose best rollout is cheaper.
-    // (If FM group is empty — e.g. num_trajectory == 1 — MPPI wins by
-    // default via min_fm = +inf.)
-    if (N_fm > 0 && min_fm <= min_mppi) {
-      policy.plan = std::move(plan_fm);
+      mppi_nominal_.plan = new_plan;
+      policy.plan = mppi_nominal_.plan;
+      last_winner_was_fm_ = false;  // no group winner concept
     } else {
-      policy.plan = std::move(plan_mppi);
+      // Group FM: base = fm_nominal_.plan, accumulate w_i * (cand_i - fm_nominal_).
+      TimeSpline plan_fm = fm_nominal_.plan;
+      for (int i = 0; i < N_fm; ++i) {
+        for (int t = 0; t < fm_nominal_.plan.Size(); ++t) {
+          auto base_node = plan_fm.begin() + t;
+          auto pol_node  = fm_nominal_.plan.begin() + t;
+          auto cand_node = candidate_policy[i].plan.begin() + t;
+          for (int k = 0; k < model->nu; ++k) {
+            base_node->values()[k] +=
+                weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+          }
+        }
+      }
+
+      // Group MPPI: base = mppi_nominal_.plan, accumulate
+      // w_i * (cand_i - mppi_nominal_).
+      TimeSpline plan_mppi = mppi_nominal_.plan;
+      for (int i = N_fm; i < num_trajectory; ++i) {
+        for (int t = 0; t < mppi_nominal_.plan.Size(); ++t) {
+          auto base_node = plan_mppi.begin() + t;
+          auto pol_node  = mppi_nominal_.plan.begin() + t;
+          auto cand_node = candidate_policy[i].plan.begin() + t;
+          for (int k = 0; k < model->nu; ++k) {
+            base_node->values()[k] +=
+                weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+          }
+        }
+      }
+      // Persist MPPI accumulator (independent of winner selection).
+      mppi_nominal_.plan = plan_mppi;
+
+      // Winner-take-all: pick the group whose best rollout is cheaper.
+      const bool fm_wins = (N_fm > 0 && min_fm <= min_mppi);
+      if (fm_wins) {
+        policy.plan = std::move(plan_fm);
+      } else {
+        policy.plan = mppi_nominal_.plan;
+      }
+      last_winner_was_fm_ = fm_wins;
+
+      // First-step-winner trace + per-sample cost dump
+      static int wtrace_n = 0;
+      if (std::getenv("MJPC_TRACE") && wtrace_n < 4) {
+        std::fprintf(stderr,
+            "[WIN #%d t=%.3f] FM_wins=%d  min_fm=%.0f  min_mppi=%.0f\n"
+            "  costs[0..7]: %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f\n"
+            "  costs[N_fm..+7]: %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f\n",
+            wtrace_n, time, (int)fm_wins, min_fm, min_mppi,
+            trajectory[0].total_return, trajectory[1].total_return,
+            trajectory[2].total_return, trajectory[3].total_return,
+            trajectory[4].total_return, trajectory[5].total_return,
+            trajectory[6].total_return, trajectory[7].total_return,
+            trajectory[N_fm].total_return, trajectory[N_fm+1].total_return,
+            trajectory[N_fm+2].total_return, trajectory[N_fm+3].total_return,
+            trajectory[N_fm+4].total_return, trajectory[N_fm+5].total_return,
+            trajectory[N_fm+6].total_return, trajectory[N_fm+7].total_return);
+        ++wtrace_n;
+      }
     }
   }
+
+  // ----- Per-step diagnostic CSV (enabled via MJPC_FLOWMPPI_LOG=path.csv) -----
+  // Columns: time, winner(0=FM 1=MPPI), N_fm, N_mppi, min_fm, min_mppi,
+  //          mean_fm, mean_mppi, std_fm, std_mppi, sum_w_fm, sum_w_mppi,
+  //          d_mppi_fm  : L2(mppi_nominal_ - fm_nominal_)   — if small, the
+  //                       two nominals are colocated (FM contamination
+  //                       hypothesis 2 alive); if it grows, they evolved
+  //                       independently as intended.
+  //          d_mppi_dt  : L2(mppi_nominal_ - mppi_nominal_(t-1))
+  //                       — stock-MPPI memory smoothness check. Small =
+  //                       smooth accumulation; large jumps = no accumulation.
+  {
+    static std::mutex log_mtx;
+    static std::ofstream log_ofs;
+    static bool log_inited = false;
+    static bool log_enabled = false;
+    std::lock_guard<std::mutex> lk(log_mtx);
+    if (!log_inited) {
+      log_inited = true;
+      const char* p = std::getenv("MJPC_FLOWMPPI_LOG");
+      if (p && p[0]) {
+        log_ofs.open(p, std::ios::out | std::ios::trunc);
+        if (log_ofs.is_open()) {
+          log_ofs << "time,winner,N_fm,N_mppi,min_fm,min_mppi,"
+                     "mean_fm,mean_mppi,std_fm,std_mppi,"
+                     "sum_w_fm,sum_w_mppi,d_mppi_fm,d_mppi_dt,"
+                     "rollouts_ms,horizon_steps,knots\n";
+          log_enabled = true;
+          std::fprintf(stderr, "[FlowMPPI] diag log -> %s\n", p);
+        }
+      }
+    }
+    if (log_enabled) {
+      const int N_mppi = num_trajectory - N_fm;
+      double s_fm = 0, s_mppi = 0, ss_fm = 0, ss_mppi = 0;
+      for (int i = 0; i < N_fm; ++i) {
+        s_fm  += trajectory[i].total_return;
+        ss_fm += trajectory[i].total_return * trajectory[i].total_return;
+      }
+      for (int i = N_fm; i < num_trajectory; ++i) {
+        s_mppi  += trajectory[i].total_return;
+        ss_mppi += trajectory[i].total_return * trajectory[i].total_return;
+      }
+      double mean_fm   = (N_fm   > 0) ? s_fm   / N_fm   : 0.0;
+      double mean_mppi = (N_mppi > 0) ? s_mppi / N_mppi : 0.0;
+      double var_fm   = (N_fm   > 0) ? std::max(0.0, ss_fm   / N_fm   - mean_fm   * mean_fm)   : 0.0;
+      double var_mppi = (N_mppi > 0) ? std::max(0.0, ss_mppi / N_mppi - mean_mppi * mean_mppi) : 0.0;
+
+      // L2 distances over knot values (per actuator, summed).
+      auto plan_l2 = [&](const TimeSpline& a, const TimeSpline& b) {
+        if (a.Size() == 0 || b.Size() == 0 || a.Size() != b.Size())
+          return 0.0;
+        double acc = 0.0;
+        for (int t = 0; t < a.Size(); ++t) {
+          auto an = a.cbegin() + t;
+          auto bn = b.cbegin() + t;
+          const auto& av = an->values();
+          const auto& bv = bn->values();
+          int n = std::min((int)av.size(), (int)bv.size());
+          for (int k = 0; k < n; ++k) {
+            double d = av[k] - bv[k];
+            acc += d * d;
+          }
+        }
+        return std::sqrt(acc);
+      };
+      double d_mppi_fm = plan_l2(mppi_nominal_.plan, fm_nominal_.plan);
+      double d_mppi_dt = plan_l2(mppi_nominal_.plan, prev_mppi_nominal_plan_);
+
+      log_ofs << time << ','
+              << (last_winner_was_fm_ ? 0 : 1) << ','
+              << N_fm << ',' << N_mppi << ','
+              << min_fm << ',' << min_mppi << ','
+              << mean_fm << ',' << mean_mppi << ','
+              << std::sqrt(var_fm) << ',' << std::sqrt(var_mppi) << ','
+              << sum_w_fm << ',' << sum_w_mppi << ','
+              << d_mppi_fm << ',' << d_mppi_dt << ','
+              << (rollouts_compute_time * 1e-3) << ','  // µs → ms
+              << horizon << ','
+              << mppi_nominal_.num_spline_points << '\n';
+    }
+  }
+
+  // Save current MPPI nominal as the snapshot for next step's d_mppi_dt.
+  prev_mppi_nominal_plan_ = mppi_nominal_.plan;
+  (void)mppi_nominal_pre;  // currently unused (kept for future analyses)
 
   candidate_policy[num_trajectory - 1].plan = policy.plan;
   winner = num_trajectory - 1;
@@ -379,7 +596,11 @@ void FlowMPPIPlanner::ActionFromPolicy(double* action, const double* state,
   // std::cout << "]" << std::endl;
 }
 
-// update policy via resampling
+// update policy via resampling — now operates on mppi_nominal_ (the persistent
+// MPPI nominal), NOT policy.plan. policy.plan is just the most recent
+// actuator command and gets overwritten by the winner-take-all below; using
+// it as the resampling base would let FM-winner steps poison the next MPPI
+// nominal.
 void FlowMPPIPlanner::UpdateNominalPolicy(int horizon) {
   // dimensions
   int num_spline_points = candidate_policy[winner].num_spline_points;
@@ -421,22 +642,24 @@ void FlowMPPIPlanner::UpdateNominalPolicy(int horizon) {
 
     // special case for when simulation time is reset (which doesn't cause
     // Planner::Reset)
-    if (policy.plan.Size() && policy.plan.begin()->time() > nominal_time) {
+    if (mppi_nominal_.plan.Size() &&
+        mppi_nominal_.plan.begin()->time() > nominal_time) {
       // time went backwards. keep the nominal plan, but start at the new time
-      policy.plan.ShiftTime(nominal_time);
+      mppi_nominal_.plan.ShiftTime(nominal_time);
       previous_policy.plan.ShiftTime(nominal_time);
     }
 
-    policy.plan.DiscardBefore(nominal_time);
-    if (policy.plan.Size() == 0) {
-      policy.plan.AddNode(nominal_time);
+    mppi_nominal_.plan.DiscardBefore(nominal_time);
+    if (mppi_nominal_.plan.Size() == 0) {
+      mppi_nominal_.plan.AddNode(nominal_time);
     }
-    while (policy.plan.Size() < num_spline_points) {
+    while (mppi_nominal_.plan.Size() < num_spline_points) {
       // duplicate the last node, with a time further in the future.
-      double new_node_time = (policy.plan.end() - 1)->time() + time_shift;
-      TimeSpline::Node new_node = policy.plan.AddNode(new_node_time);
-      std::copy((policy.plan.end() - 2)->values().begin(),
-                (policy.plan.end() - 2)->values().end(),
+      double new_node_time =
+          (mppi_nominal_.plan.end() - 1)->time() + time_shift;
+      TimeSpline::Node new_node = mppi_nominal_.plan.AddNode(new_node_time);
+      std::copy((mppi_nominal_.plan.end() - 2)->values().begin(),
+                (mppi_nominal_.plan.end() - 2)->values().end(),
                 new_node.values().begin());
     }
   } else {
@@ -456,33 +679,42 @@ void FlowMPPIPlanner::UpdateNominalPolicy(int horizon) {
     // get spline points
     for (int t = 0; t < num_spline_points; t++) {
       TimeSpline::Node node = plan_scratch.AddNode(nominal_time);
-      // candidate_policy[winner].Action(node.values().data(), /*state=*/nullptr,
-      //                                 nominal_time);
-      policy.Action(node.values().data(), /*state=*/nullptr, nominal_time);
+      mppi_nominal_.Action(node.values().data(), /*state=*/nullptr,
+                           nominal_time);
       nominal_time += time_shift;
     }
 
-    // copy scratch into plan
+    // copy scratch into mppi_nominal_.plan
     {
       const std::unique_lock<std::shared_mutex> lock(mtx_);
-      policy.plan = plan_scratch;
+      mppi_nominal_.plan = plan_scratch;
     }
   }
 }
 
 // add random noise to nominal policy
-void FlowMPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
+void FlowMPPIPlanner::AddNoiseToPolicy(double start_time, int i, double scale) {
   // start timer
   auto noise_start = std::chrono::steady_clock::now();
 
-  // sampling token
+  // sampling token — deterministic seed for leak diagnosis. If MJPC_FIXED_SEED
+  // is set, derive seed from (time, i) so noise is reproducible regardless
+  // of preceding ONNX / FM-thread activity.
   absl::BitGen gen_;
+  if (std::getenv("MJPC_FIXED_SEED")) {
+    uint64_t seed = static_cast<uint64_t>(start_time * 1e6) * 1000003ull
+                  + static_cast<uint64_t>(i) * 65537ull;
+    std::seed_seq seq{
+        static_cast<unsigned>(seed & 0xFFFFFFFFu),
+        static_cast<unsigned>(seed >> 32)};
+    gen_ = absl::BitGen(seq);
+  }
 
   // get standard deviation, fixed or mixture of noise_exploration[0,1]
-  double std = noise_exploration[0];
+  double std = noise_exploration[0] * scale;
   constexpr double kStd2Proportion = 0.2;  // hardcoded proportion of 2nd std
   if (noise_exploration[1] > 0 && absl::Bernoulli(gen_, kStd2Proportion)) {
-    std = noise_exploration[1];
+    std = noise_exploration[1] * scale;
   }
 
   // Per-joint sigma_k. Either from <sampling_std_per_joint> directly (matches
@@ -548,20 +780,51 @@ void FlowMPPIPlanner::Rollouts(int num_trajectory, int horizon,
                    &state = this->state, &time = this->time,
                    &mocap = this->mocap, &userdata = this->userdata, horizon,
                    i, N_fm]() {
-      // copy nominal policy
+      // ONNX Runtime is known to set FTZ/DAZ in its worker threads. If our
+      // rollout worker pool shares CPU cores with ORT threads (via OS
+      // scheduler), the MXCSR FTZ/DAZ bits can persist into our worker —
+      // changing mujoco's floating-point semantics for denormals and
+      // producing different rollout costs. Reset MXCSR FTZ/DAZ at the top
+      // of every rollout task to make our workers immune to ORT side-effects.
+      static thread_local bool mxcsr_reset_logged = false;
+      unsigned int csr_before = _mm_getcsr();
+      _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_OFF);
+      _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_OFF);
+      unsigned int csr_after = _mm_getcsr();
+      if (!mxcsr_reset_logged && csr_before != csr_after) {
+        std::fprintf(stderr,
+            "[Rollouts worker] MXCSR FTZ/DAZ was set by ORT — reset: "
+            "0x%04x -> 0x%04x\n", csr_before, csr_after);
+        mxcsr_reset_logged = true;
+      }
+
+      // copy nominal policy (FM group → fm_nominal_, MPPI group → persistent
+      // mppi_nominal_; NOT policy.plan which carries only last actuator out).
       {
         const std::shared_lock<std::shared_mutex> lock(s.mtx_);
         if (i < N_fm) {
           s.candidate_policy[i].CopyFrom(s.fm_nominal_,
                                          s.fm_nominal_.num_spline_points);
         } else {
-          s.candidate_policy[i].CopyFrom(s.policy, s.policy.num_spline_points);
+          s.candidate_policy[i].CopyFrom(s.mppi_nominal_,
+                                         s.mppi_nominal_.num_spline_points);
         }
       }
 
       // sample noise policy (keep one noise-free copy per group as the
       // nominal evaluation: i==0 for FM nominal, i==N_fm for MPPI nominal).
-      if (i != 0 && i != N_fm) s.AddNoiseToPolicy(time, i);
+      // FM group noise scale: MJPC_FM_NOISE_SCALE env (default 1.0). Smaller
+      // ⇒ FM samples cluster closer to FM PD torque ⇒ they stay "contact
+      // capable" and dominate winner-take-all more reliably, while MPPI
+      // group's wider noise keeps exploring xy-tracking refinements.
+      if (i != 0 && i != N_fm) {
+        double scale = 1.0;
+        if (i < N_fm) {
+          if (const char* e = std::getenv("MJPC_FM_NOISE_SCALE"); e && e[0])
+            scale = std::atof(e);
+        }
+        s.AddNoiseToPolicy(time, i, scale);
+      }
 
       // ----- rollout sample policy ----- //
 
@@ -712,16 +975,9 @@ void FlowMPPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
   mju::strcpy_arr(fig_timer->linename[2 + timer_shift], "Policy Update");
 
   // =============== EC =============== //
-  if (this->model) {
-    int num_id = mj_name2id(this->model, mjOBJ_NUMERIC, "F_des");
-    if (num_id >= 0) {
-      double* ptr =
-          this->model->numeric_data + this->model->numeric_adr[num_id];
-      ptr[0] = F_des[0];
-      ptr[1] = F_des[1];
-      ptr[2] = F_des[2];
-    }
-  }
+  // F_des write disabled — leak diagnosis. GUI slider F_des values no longer
+  // propagated to model->numeric_data; task.xml's F_des value remains intact.
+  // (void)F_des; — keep slider data path unused.
   // ================================== //
 
   // planner shift
@@ -757,34 +1013,79 @@ void FlowMPPIPlanner::CopyCandidateToPolicy(int candidate) {
 
 void FlowMPPIPlanner::UpdateFM() {
   const FMConfig& fmc = GetFMConfig();
-  // Lazy load FM policy.
-  if (!fm_tried_) {
-    fm_tried_ = true;
-    const std::string& ckpt  = fmc.fm_checkpoint;
-    const std::string& stats = fmc.fm_stats;
-    if (!ckpt.empty() && !stats.empty()) {
-      try {
-        fm_policy_ = std::make_unique<ONNXPolicy>(ckpt.c_str(), stats.c_str());
-        if (fm_policy_->isLoaded()) {
-          fm_policy_->startFMThread();
-          fm_loaded_ = true;
-          std::printf("[FlowMPPI] FM loaded: state=%d action=%d horizon=%d\n",
-                      fm_policy_->getStateDim(), fm_policy_->getActionDim(),
-                      fm_policy_->getHorizon());
-        } else {
-          fm_policy_.reset();
+  const bool use_mlp = (fmc.guide_type == "mlp");
+
+  // Lazy load guide model (FM-DiT or MLP student, picked by guide_type).
+  // On failure the guide stays disabled and CostFMTrack sees g_qfm_valid=false
+  // (residual returns 0). No fallback FM-load when MLP is requested but fails.
+  if (use_mlp) {
+    if (!mlp_tried_) {
+      mlp_tried_ = true;
+      const std::string& ckpt  = fmc.mlp_checkpoint;
+      const std::string& stats = fmc.mlp_stats;
+      if (ckpt.empty() || stats.empty()) {
+        std::fprintf(stderr,
+            "[FlowMPPI] guide_type=mlp but mlp_checkpoint / mlp_stats "
+            "are empty — guide disabled. Set MJPC_MLP_CKPT and "
+            "MJPC_MLP_STATS or fill fm_config.yaml.\n");
+      } else {
+        try {
+          mlp_policy_ = std::make_unique<MLPGuidePolicy>(ckpt, stats);
+          if (mlp_policy_->isLoaded()) {
+            mlp_loaded_ = true;
+            std::printf("[FlowMPPI] MLP guide loaded: state=%d action=%d "
+                        "horizon=%d\n",
+                        mlp_policy_->getStateDim(),
+                        mlp_policy_->getActionDim(),
+                        mlp_policy_->getHorizon());
+          } else {
+            std::fprintf(stderr,
+                "[FlowMPPI] MLP guide load FAILED — guide disabled.\n");
+            mlp_policy_.reset();
+          }
+        } catch (const std::exception& e) {
+          std::fprintf(stderr,
+              "[FlowMPPI] MLP guide exception: %s — guide disabled.\n",
+              e.what());
+          mlp_policy_.reset();
         }
-      } catch (const std::exception& e) {
-        std::printf("[FlowMPPI] FM load failed: %s\n", e.what());
-        fm_policy_.reset();
       }
     }
+    if (!mlp_loaded_ || !mlp_policy_ || !model) return;
+  } else {
+    if (!fm_tried_) {
+      fm_tried_ = true;
+      const std::string& ckpt  = fmc.fm_checkpoint;
+      const std::string& stats = fmc.fm_stats;
+      if (!ckpt.empty() && !stats.empty()) {
+        try {
+          fm_policy_ = std::make_unique<ONNXPolicy>(ckpt.c_str(), stats.c_str());
+          if (fm_policy_->isLoaded()) {
+            fm_policy_->setNumOdeSteps(fmc.fm_ode_steps);
+            fm_policy_->startFMThread();
+            fm_loaded_ = true;
+            std::printf("[FlowMPPI] FM loaded: state=%d action=%d horizon=%d "
+                        "ode_steps=%d\n",
+                        fm_policy_->getStateDim(), fm_policy_->getActionDim(),
+                        fm_policy_->getHorizon(), fmc.fm_ode_steps);
+          } else {
+            fm_policy_.reset();
+          }
+        } catch (const std::exception& e) {
+          std::printf("[FlowMPPI] FM load failed: %s\n", e.what());
+          fm_policy_.reset();
+        }
+      }
+    }
+    if (!fm_loaded_ || !fm_policy_ || !model) return;
   }
-  if (!fm_loaded_ || !fm_policy_ || !model) return;
 
-  // Throttle FM inference to fm_chunk_dt cadence.
-  if (ws_last_time_ >= 0 && time - ws_last_time_ < fmc.fm_chunk_dt - 1e-6)
+  // Throttle FM inference / TE blend to fm_chunk_dt cadence. We still publish
+  // q_fm_target every plan iteration via PublishFMTarget() — called outside
+  // UpdateFM in OptimizePolicyCandidates.
+  if (ws_last_time_ >= 0 && time - ws_last_time_ < fmc.fm_chunk_dt - 1e-6) {
     return;
+  }
 
   // Cache site ids once.
   if (hand_site_id_ < 0) {
@@ -817,9 +1118,13 @@ void FlowMPPIPlanner::UpdateFM() {
   }
   mj_kinematics(model, ws_data_);
 
-  const int sd = fm_policy_->getStateDim();
-  const int ad = fm_policy_->getActionDim();
-  const bool include_ee = fm_policy_->includesEE() && sd >= 17;
+  // Resolve dimensions from whichever guide is active.
+  const int sd = use_mlp ? mlp_policy_->getStateDim()
+                         : fm_policy_->getStateDim();
+  const int ad = use_mlp ? mlp_policy_->getActionDim()
+                         : fm_policy_->getActionDim();
+  const bool include_ee = (use_mlp ? mlp_policy_->includesEE()
+                                   : fm_policy_->includesEE()) && sd >= 17;
 
   Eigen::VectorXd s_vec = Eigen::VectorXd::Zero(sd);
   for (int i = 0; i < 7; ++i) {
@@ -878,20 +1183,37 @@ void FlowMPPIPlanner::UpdateFM() {
   }
   if ((int)prev_state_.size() != sd) prev_state_ = s_vec;
 
-  fm_policy_->requestPrediction(s_vec, prev_state_, prev_action_, goal);
+  // Guide-specific chunk acquisition. Both paths push into te_chunks_, so
+  // the downstream TE blend + q_d_traj_cached_ writer is shared.
+  if (use_mlp) {
+    std::vector<Eigen::VectorXd> chunk;
+    if (mlp_policy_->predictChunk(s_vec, prev_state_, prev_action_, goal,
+                                  chunk)) {
+      te_chunks_.push_back(std::move(chunk));
+      if ((int)te_chunks_.size() > fmc.fm_te_buffer) te_chunks_.pop_front();
+      last_chunk_recv_time_ = time;
+    }
+  } else {
+    fm_policy_->requestPrediction(s_vec, prev_state_, prev_action_, goal);
 
-  std::vector<Eigen::VectorXd> chunk;
-  if (fm_policy_->getLatestChunk(chunk)) {
-    te_chunks_.push_back(std::move(chunk));
-    if ((int)te_chunks_.size() > fmc.fm_te_buffer) te_chunks_.pop_front();
+    std::vector<Eigen::VectorXd> chunk;
+    if (fm_policy_->getLatestChunk(chunk)) {
+      te_chunks_.push_back(std::move(chunk));
+      if ((int)te_chunks_.size() > fmc.fm_te_buffer) te_chunks_.pop_front();
+      last_chunk_recv_time_ = time;  // fm_chunk_advance reference time
+    }
   }
 
-  // Fallback: until the first FM chunk arrives (async, ~20ms latency),
-  // synthesize a "hold current pose" chunk so the warmstart can still
-  // produce gravity-comp τ from t=0. Without this, the first ~20ms have
-  // zero policy and the robot freefalls — fatal for rollouts=1 validation.
+  // Fallback: until the first chunk arrives (FM is async ~20ms; MLP is
+  // synchronous but may still produce no chunk on first call if predict
+  // returns false), synthesize a "hold current pose" chunk so the
+  // warmstart can produce gravity-comp τ from t=0. Without this, the
+  // first ~20ms have zero policy and the robot freefalls — fatal for
+  // rollouts=1 validation.
   if (te_chunks_.empty()) {
-    const int H = fm_policy_->getHorizon() > 0 ? fm_policy_->getHorizon() : 10;
+    const int H_guide =
+        use_mlp ? mlp_policy_->getHorizon() : fm_policy_->getHorizon();
+    const int H = H_guide > 0 ? H_guide : 10;
     std::vector<Eigen::VectorXd> hold_chunk(H, Eigen::VectorXd::Zero(7));
     for (int h = 0; h < H; ++h) {
       for (int j = 0; j < 7; ++j) hold_chunk[h](j) = ws_data_->qpos[j];
@@ -939,6 +1261,71 @@ void FlowMPPIPlanner::UpdateFM() {
   if (!te_chunks_.empty() && !te_chunks_.back().empty()) {
     prev_action_ = te_chunks_.back()[0];
   }
+
+  // (q_fm_target publishing moved to PublishFMTarget — called every plan iter.)
+}
+
+void FlowMPPIPlanner::PublishFMTarget() {
+  // Option E: publish FM's q_d target to model's 'q_fm_target' numeric.
+  //   fm_chunk_advance=true (default): idx walks along q_d_traj_cached_ in
+  //     real time from chunk receive moment, saturating at chunk_idx.
+  //     Linear interp between two neighbor q_d points.
+  //   fm_chunk_advance=false: idx fixed at chunk_idx (legacy).
+  static int n_calls = 0;
+  static int n_empty = 0;
+  static int n_written = 0;
+  static int n_logged = 0;
+  ++n_calls;
+  if (!model || q_d_traj_cached_.empty()) {
+    ++n_empty;
+    if (n_logged < 5) {
+      std::fprintf(stderr, "[PublishFMTarget] call=%d EMPTY model=%p cache_size=%zu\n",
+                   n_calls, (void*)model,
+                   model ? q_d_traj_cached_.size() : (size_t)0);
+      ++n_logged;
+    }
+    return;
+  }
+  ++n_written;
+  if (n_written <= 3 || n_written % 200 == 1) {
+    std::fprintf(stderr, "[PublishFMTarget] call=%d written=%d cache_H=%zu "
+                 "last_chunk_recv=%g advance=%d\n",
+                 n_calls, n_written, q_d_traj_cached_.size(),
+                 last_chunk_recv_time_, (int)GetFMConfig().fm_chunk_advance);
+  }
+  int id = mj_name2id(model, mjOBJ_NUMERIC, "q_fm_target");
+  if (id < 0) return;
+  const FMConfig& fmc = GetFMConfig();
+  const int H = (int)q_d_traj_cached_.size();
+  const int idx_max = std::clamp(fmc.chunk_idx, 0, H - 1);
+  double* dst = model->numeric_data + model->numeric_adr[id];
+  const int sz = std::min(7, model->numeric_size[id]);
+
+  if (fmc.fm_chunk_advance && last_chunk_recv_time_ >= 0 &&
+      fmc.fm_chunk_dt > 0) {
+    double dt_since = time - last_chunk_recv_time_;
+    double idx_f = std::max(0.0, dt_since / fmc.fm_chunk_dt);
+    idx_f = std::min(idx_f, (double)idx_max);
+    int idx_lo = static_cast<int>(idx_f);
+    int idx_hi = std::min(idx_lo + 1, idx_max);
+    double alpha = idx_f - idx_lo;
+    const auto& q_lo = q_d_traj_cached_[idx_lo];
+    const auto& q_hi = q_d_traj_cached_[idx_hi];
+    for (int j = 0; j < sz && j < q_lo.size(); ++j) {
+      dst[j] = (1.0 - alpha) * q_lo(j) + alpha * q_hi(j);
+    }
+  } else {
+    const auto& q = q_d_traj_cached_[idx_max];
+    for (int j = 0; j < sz && j < q.size(); ++j) dst[j] = q(j);
+  }
+  // Mirror to global atomic so fr3.cc CSV logger sees it (planner has its
+  // own mj_copyModel; sim model's numeric_data is never touched here).
+  for (int j = 0; j < sz; ++j) {
+    g_qfm_target[j].store(dst[j], std::memory_order_relaxed);
+  }
+  // Signal that q_fm_target has been populated with a real FM chunk.
+  // CostFMTrack uses this to skip residual computation in Stage 1.
+  g_qfm_valid.store(true, std::memory_order_relaxed);
 }
 
 void FlowMPPIPlanner::ApplyWarmstart() {
@@ -1020,11 +1407,44 @@ void FlowMPPIPlanner::ApplyWarmstart() {
     }
 
     // Write τ to FM-nominal knot t (not policy.plan — MPPI nominal is kept).
-    auto node = fm_nominal_.plan.begin() + t;
-    double* vals = node->values().data();
-    const int n = std::min<int>(nu, (int)node->values().size());
-    for (int j = 0; j < n; ++j) {
-      vals[j] = (j < 7) ? tau_clipped[j] : 0.0;
+    // Joint mask: MJPC_FM_JOINT_MASK env var ("0,1,0,1,0,0,0" style) chooses
+    // which joints receive the FM torque; others keep mppi_nominal_ torque
+    // (already copied into fm_nominal_.plan by CopyFrom). Default = all 1s.
+    static double mask[7] = {1, 1, 1, 1, 1, 1, 1};
+    static bool   mask_initialized = false;
+    if (!mask_initialized) {
+      mask_initialized = true;
+      if (const char* e = std::getenv("MJPC_FM_JOINT_MASK"); e && e[0]) {
+        std::string s(e);
+        size_t pos = 0;
+        for (int j = 0; j < 7 && pos < s.size(); ++j) {
+          size_t comma = s.find(',', pos);
+          std::string tok = s.substr(pos, comma - pos);
+          mask[j] = std::atof(tok.c_str());
+          if (comma == std::string::npos) break;
+          pos = comma + 1;
+        }
+        std::fprintf(stderr,
+            "[FlowMPPI] FM joint mask: [%.2f %.2f %.2f %.2f %.2f %.2f %.2f]\n",
+            mask[0], mask[1], mask[2], mask[3], mask[4], mask[5], mask[6]);
+      }
+    }
+    static bool skip_write = []() {
+      if (const char* e = std::getenv("MJPC_AWS_SKIP_WRITE"); e && e[0])
+        return std::atoi(e) != 0;
+      return false;
+    }();
+    if (!skip_write) {
+      auto node = fm_nominal_.plan.begin() + t;
+      double* vals = node->values().data();
+      const int n = std::min<int>(nu, (int)node->values().size());
+      for (int j = 0; j < n; ++j) {
+        if (j < 7) {
+          vals[j] = mask[j] * tau_clipped[j] + (1.0 - mask[j]) * vals[j];
+        } else {
+          vals[j] = 0.0;
+        }
+      }
     }
 
     // Propagate.

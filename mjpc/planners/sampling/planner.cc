@@ -15,7 +15,11 @@
 #include "mjpc/planners/sampling/planner.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <mutex>
 #include <shared_mutex>
 
@@ -60,8 +64,17 @@ void SamplingPlanner::Initialize(mjModel* model, const Task& task) {
     noise_exploration[1] = model->numeric_data[se_adr+1];
   }
 
-  // set number of trajectories to rollout
+  // set number of trajectories to rollout. MJPC_TRAJECTORIES env var
+  // overrides task.xml for FlowMPPI-vs-MPPI sweep experiments.
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
+  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v > 0) {
+      num_trajectory_ = v;
+      std::fprintf(stderr,
+                   "[Sampling] MJPC_TRAJECTORIES override: N=%d\n", v);
+    }
+  }
 
   interpolation_ = GetNumberOrDefault(SplineInterpolation::kCubicSpline, model,
                                       "sampling_representation");
@@ -70,6 +83,32 @@ void SamplingPlanner::Initialize(mjModel* model, const Task& task) {
   if (num_trajectory_ > kMaxTrajectory) {
     mju_error_i("Too many trajectories, %d is the maximum allowed.",
                 kMaxTrajectory);
+  }
+
+  // MPPI softmax temperature (mirrors FlowMPPI: read from "sampling_lambda",
+  // env override via MJPC_LAMBDA).
+  mppi_lambda_ = GetNumberOrDefault(1.0, model, "sampling_lambda");
+  if (const char* e = std::getenv("MJPC_LAMBDA"); e && e[0]) {
+    double v = std::atof(e);
+    if (v > 0) {
+      mppi_lambda_ = v;
+      std::fprintf(stderr, "[Sampling] MJPC_LAMBDA override: lambda=%g\n", v);
+    }
+  }
+
+  // Per-joint sigma (mirrors FlowMPPI). Empty = fallback to 0.5*ctrlrange.
+  noise_std_per_joint_.clear();
+  int sj_id = mj_name2id(model, mjOBJ_NUMERIC, "sampling_std_per_joint");
+  if (sj_id >= 0) {
+    int sj_size = model->numeric_size[sj_id];
+    if (sj_size != model->nu) {
+      mju_error_i(
+          "sampling_std_per_joint size mismatch: expected nu=%d entries",
+          model->nu);
+    }
+    int sj_adr = model->numeric_adr[sj_id];
+    noise_std_per_joint_.assign(model->numeric_data + sj_adr,
+                                model->numeric_data + sj_adr + sj_size);
   }
 
   winner = 0;
@@ -190,24 +229,201 @@ int SamplingPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // stop timer
   rollouts_compute_time = GetDuration(rollouts_start);
 
+  // ----- Per-step diagnostic CSV (enabled via MJPC_MPPI_LOG=path.csv) -----
+  // Matches FlowMPPI diag format (FM-side columns set to 0/NaN-equivalent)
+  // for unified sweep analysis.
+  {
+    static std::mutex log_mtx;
+    static std::ofstream log_ofs;
+    static bool log_inited = false;
+    static bool log_enabled = false;
+    std::lock_guard<std::mutex> lk(log_mtx);
+    if (!log_inited) {
+      log_inited = true;
+      const char* p = std::getenv("MJPC_MPPI_LOG");
+      if (p && p[0]) {
+        log_ofs.open(p, std::ios::out | std::ios::trunc);
+        if (log_ofs.is_open()) {
+          log_ofs << "time,N,min_cost,mean_cost,std_cost,"
+                     "rollouts_ms,horizon_steps,knots\n";
+          log_enabled = true;
+          std::fprintf(stderr, "[Sampling] diag log -> %s\n", p);
+        }
+      }
+    }
+    if (log_enabled) {
+      double min_c = std::numeric_limits<double>::infinity();
+      double s = 0, ss = 0;
+      for (int i = 0; i < num_trajectory; ++i) {
+        double c = trajectory[i].total_return;
+        if (c < min_c) min_c = c;
+        s += c; ss += c * c;
+      }
+      double mean_c = s / num_trajectory;
+      double var_c = std::max(0.0, ss / num_trajectory - mean_c * mean_c);
+      log_ofs << time << ',' << num_trajectory << ','
+              << min_c << ',' << mean_c << ',' << std::sqrt(var_c) << ','
+              << (rollouts_compute_time * 1e-3) << ','
+              << horizon << ','
+              << policy.num_spline_points << '\n';
+    }
+  }
+
   return ncandidates;
 }
 
-// optimize nominal policy using random sampling
+// optimize nominal policy using softmax-weighted MPPI update.
+// Stock mjpc behaviour was argmin (CopyCandidateToPolicy(0) after partial sort).
+// Modified: compute softmax weights from all N rollouts and update the policy
+// as a weighted average — matches the textbook MPPI / FlowMPPI cost-mode
+// update. Lambda from "sampling_lambda" numeric (env MJPC_LAMBDA override).
 void SamplingPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
-  OptimizePolicyCandidates(1, horizon, pool);
+  // Need every rollout's cost, not just the top one. Pass num_trajectory so
+  // partial_sort fully orders all candidates (used only for winner bookkeeping;
+  // softmax uses every trajectory's cost).
+  OptimizePolicyCandidates(num_trajectory_, horizon, pool);
 
   // ----- update policy ----- //
-  // start timer
   auto policy_update_start = std::chrono::steady_clock::now();
 
-  CopyCandidateToPolicy(0);
+  const int N = num_trajectory_;
 
-  // improvement: compare nominal to winner
-  double best_return = trajectory[0].total_return;
-  improvement = mju_max(best_return - trajectory[winner].total_return, 0.0);
+  // Per-joint MPPI toggle (MJPC_PER_JOINT=1). FR3 task only.
+  // When enabled, each actuator dim has its own softmax based on a per-joint
+  // cost that combines shared cost contributions + joint-j-specific
+  // contributions extracted from the residual array. Mirrors the CUDA
+  // MPPI_tau.cu structure for hypothesis testing.
+  // Residual layout (FR3, fr3.cc::Residual call order):
+  //   pos[0..2] ori[3..5] jc[6..12] jv[13..19] force[20..22]
+  //   ctrl[23..29] ee_zvel[30] fm_track[31..37]
+  // Joint j has residual entries: 6+j, 13+j, 23+j, 31+j.
+  static bool per_joint = []() {
+    if (const char* e = std::getenv("MJPC_PER_JOINT"); e && e[0]) {
+      std::string v = e;
+      return v == "1" || v == "true" || v == "on" || v == "yes";
+    }
+    return false;
+  }();
 
-  // stop timer
+  if (!per_joint) {
+    // ---------- Standard MPPI: single softmax over total_return ----------
+    double min_cost = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < N; ++i) {
+      min_cost = std::min(min_cost, trajectory[i].total_return);
+    }
+    std::vector<double> weights(N);
+    double sum_w = 0.0;
+    for (int i = 0; i < N; ++i) {
+      weights[i] = std::exp(-(trajectory[i].total_return - min_cost) /
+                            mppi_lambda_);
+      sum_w += weights[i];
+    }
+    if (sum_w > 0.0) {
+      for (int i = 0; i < N; ++i) weights[i] /= sum_w;
+    } else {
+      for (int i = 0; i < N; ++i) weights[i] = 0.0;
+      weights[trajectory_order[0]] = 1.0;
+    }
+    {
+      const std::unique_lock<std::shared_mutex> lock(mtx_);
+      previous_policy = policy;
+      const int K = policy.plan.Size();
+      for (int t = 0; t < K; ++t) {
+        auto base_node = policy.plan.begin() + t;
+        for (int k = 0; k < model->nu; ++k) base_node->values()[k] = 0.0;
+        for (int i = 0; i < N; ++i) {
+          auto cand_node = candidate_policy[i].plan.begin() + t;
+          for (int k = 0; k < model->nu; ++k) {
+            base_node->values()[k] += weights[i] * cand_node->values()[k];
+          }
+        }
+      }
+      winner = trajectory_order[0];
+    }
+  } else {
+    // ---------- Per-joint MPPI (FR3-specific residual layout) ----------
+    constexpr int JC_OFF = 6, JV_OFF = 13, CT_OFF = 23, FM_OFF = 31;
+    constexpr int NU = 7;  // FR3 has 7 actuators
+    // Read weights from numeric_data (parsed at task init).
+    // task.xml: joint_cent w=20, joint_vel_penalty w=500, u_reg w=0.01,
+    //           FM_track w=10000. Quadratic norm = 0.5 * x' * x.
+    static const double W_JC = 20.0, W_JV = 500.0, W_CT = 0.01, W_FM = 10000.0;
+
+    const int dim_res = trajectory[0].dim_residual;
+    const int H = trajectory[0].horizon;
+
+    // Per-joint joint-specific cost: sum_t 0.5 * w * residual_j(t)^2
+    // for each per-joint term. Sum across all joints = ∑ joint-specific.
+    // Shared cost = total_return - joint_specific_total.
+    // per_joint_cost[i][j] = shared[i] + joint_j_specific[i].
+    std::vector<std::array<double, NU>> jspec(N);
+    for (int i = 0; i < N; ++i) {
+      for (int j = 0; j < NU; ++j) jspec[i][j] = 0.0;
+      for (int t = 0; t < H; ++t) {
+        const double* r = trajectory[i].residual.data() + t * dim_res;
+        for (int j = 0; j < NU; ++j) {
+          double v_jc = r[JC_OFF + j];
+          double v_jv = r[JV_OFF + j];
+          double v_ct = r[CT_OFF + j];
+          double v_fm = r[FM_OFF + j];
+          jspec[i][j] += 0.5 * (W_JC * v_jc * v_jc + W_JV * v_jv * v_jv +
+                                W_CT * v_ct * v_ct + W_FM * v_fm * v_fm);
+        }
+      }
+    }
+    std::vector<std::array<double, NU>> pj_cost(N);
+    for (int i = 0; i < N; ++i) {
+      double sum_j = 0.0;
+      for (int j = 0; j < NU; ++j) sum_j += jspec[i][j];
+      double shared = trajectory[i].total_return - sum_j;
+      for (int j = 0; j < NU; ++j) pj_cost[i][j] = shared + jspec[i][j];
+    }
+    // Per-joint softmax: weights[j][i].
+    std::vector<std::array<double, NU>> weights(N);
+    std::array<double, NU> sum_w{}; sum_w.fill(0.0);
+    std::array<double, NU> min_c{}; min_c.fill(std::numeric_limits<double>::infinity());
+    for (int j = 0; j < NU; ++j) {
+      for (int i = 0; i < N; ++i) min_c[j] = std::min(min_c[j], pj_cost[i][j]);
+    }
+    for (int i = 0; i < N; ++i) {
+      for (int j = 0; j < NU; ++j) {
+        double w = std::exp(-(pj_cost[i][j] - min_c[j]) / mppi_lambda_);
+        weights[i][j] = w;
+        sum_w[j] += w;
+      }
+    }
+    for (int j = 0; j < NU; ++j) {
+      if (sum_w[j] > 0.0) {
+        for (int i = 0; i < N; ++i) weights[i][j] /= sum_w[j];
+      } else {
+        for (int i = 0; i < N; ++i) weights[i][j] = 0.0;
+        weights[trajectory_order[0]][j] = 1.0;
+      }
+    }
+    {
+      const std::unique_lock<std::shared_mutex> lock(mtx_);
+      previous_policy = policy;
+      const int K = policy.plan.Size();
+      for (int t = 0; t < K; ++t) {
+        auto base_node = policy.plan.begin() + t;
+        for (int k = 0; k < model->nu; ++k) base_node->values()[k] = 0.0;
+        for (int i = 0; i < N; ++i) {
+          auto cand_node = candidate_policy[i].plan.begin() + t;
+          for (int k = 0; k < model->nu; ++k) {
+            int j = k < NU ? k : 0;
+            base_node->values()[k] += weights[i][j] * cand_node->values()[k];
+          }
+        }
+      }
+      winner = trajectory_order[0];
+    }
+  }
+
+  // improvement: argmin-based, same as before for monitoring continuity.
+  improvement = mju_max(trajectory[0].total_return -
+                            trajectory[winner].total_return,
+                        0.0);
+
   policy_update_compute_time = GetDuration(policy_update_start);
 }
 
@@ -349,11 +565,36 @@ void SamplingPlanner::AddNoiseToPolicy(double start_time, int i) {
     std = noise_exploration[1];
   }
 
-  for (const TimeSpline::Node& node : candidate_policy[i].plan) {
-    for (int k = 0; k < model->nu; k++) {
+  // Per-joint sigma: prefer xml-defined per-joint values (matches FlowMPPI /
+  // reference tau-MPPI). Fallback = 0.5*ctrlrange when unset.
+  const bool use_per_joint =
+      static_cast<int>(noise_std_per_joint_.size()) == model->nu;
+  double sigma[64];  // assume nu small (panda has 7)
+  for (int k = 0; k < model->nu; k++) {
+    if (use_per_joint) {
+      sigma[k] = noise_std_per_joint_[k] * std;
+    } else {
       double scale = 0.5 * (model->actuator_ctrlrange[2 * k + 1] -
                             model->actuator_ctrlrange[2 * k]);
-      double noise = absl::Gaussian<double>(gen_, 0.0, scale * std);
+      sigma[k] = scale * std;
+    }
+  }
+  // Optional knot-to-knot noise smoothing (mirrors CUDA MPPI_tau.cu α=0.9):
+  //   noise_t = α * noise_{t-1} + (1-α) * gauss(0, sigma)
+  // ENV: MJPC_NOISE_ALPHA (default 0.0 = white noise per knot). User CUDA
+  // uses 0.9 (strongly correlated). Hypothesis test for whether smoothed
+  // noise breaks K=8 stability in this wipe setup.
+  static double noise_alpha = []() {
+    if (const char* e = std::getenv("MJPC_NOISE_ALPHA"); e && e[0])
+      return std::atof(e);
+    return 0.0;
+  }();
+  double prev_noise[64] = {0};
+  for (const TimeSpline::Node& node : candidate_policy[i].plan) {
+    for (int k = 0; k < model->nu; k++) {
+      double rnd = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
+      double noise = noise_alpha * prev_noise[k] + (1.0 - noise_alpha) * rnd;
+      prev_noise[k] = noise;
       node.values()[k] += noise;
     }
     Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
@@ -382,8 +623,11 @@ void SamplingPlanner::Rollouts(int num_trajectory, int horizon,
         s.candidate_policy[i].CopyFrom(s.policy, s.policy.num_spline_points);
       }
 
-      // sample noise policy
-      if (i != 0) s.AddNoiseToPolicy(time, i);
+      // sample noise policy — textbook MPPI: noise added to every rollout
+      // including i=0. mjpc default kept i=0 noise-free as a safety floor,
+      // but that's not part of the MPPI algorithm and biases the softmax
+      // toward the warmstart. Removed for fair MPPI baseline.
+      s.AddNoiseToPolicy(time, i);
 
       // ----- rollout sample policy ----- //
 

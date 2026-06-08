@@ -3,6 +3,7 @@
 #include <fstream>
 #include <chrono>
 #include <cnpy.h>
+#include "mjpc/timing_globals.h"
 
 ONNXPolicy::ONNXPolicy(const std::string& model_path, const std::string& stats_path)
     : memory_info_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)),
@@ -23,6 +24,20 @@ ONNXPolicy::ONNXPolicy(const std::string& model_path, const std::string& stats_p
         session_options_ = std::make_unique<Ort::SessionOptions>();
         session_options_->SetIntraOpNumThreads(1);
         session_options_->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+
+        // Optional CUDA execution provider (MJPC_FM_DEVICE=cuda).
+        // Falls back to CPU silently if libonnxruntime_providers_cuda.so missing.
+        if (const char* dev = std::getenv("MJPC_FM_DEVICE"); dev && std::string(dev) == "cuda") {
+            try {
+                OrtCUDAProviderOptions cuda_opts{};
+                cuda_opts.device_id = 0;
+                session_options_->AppendExecutionProvider_CUDA(cuda_opts);
+                std::cout << "[ONNXPolicy] Using CUDA execution provider (GPU 0)" << std::endl;
+            } catch (const Ort::Exception& e) {
+                std::cout << "[ONNXPolicy] CUDA EP failed (" << e.what()
+                          << "), falling back to CPU" << std::endl;
+            }
+        }
 
         std::cout << "[ONNXPolicy] Loading model from: " << model_path << std::endl;
         session_ = std::make_unique<Ort::Session>(*env_, model_path.c_str(), *session_options_);
@@ -597,6 +612,8 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
 
     auto t_end = std::chrono::high_resolution_clock::now();
     double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    // expose for CSV logger (fr3.cc reads this)
+    mjpc::g_fm_inference_ms.store(elapsed_ms, std::memory_order_relaxed);
 
     static int fm_call_count = 0;
     static double fm_total_ms = 0.0;

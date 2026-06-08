@@ -5,34 +5,101 @@
 # and a few mjpc runtime flags (tasks_dir, autorun).
 
 # ============ mjpc runtime (env-var equivalents) ============
+# Each key below maps 1-to-1 with an environment variable (MJPC_*).
+# An environment variable, if set, *takes precedence* over the YAML value.
+# Sweep scripts (scripts/sweep_horizon.sh) set the env vars per run; for
+# normal interactive use, edit the YAML and skip the env vars.
+
 # tasks_dir → MJPC_TASKS_DIR. Where mjpc reads task XMLs from.
 #   "" (empty) = mjpc default (build/.../mjpc/tasks).
 #   "mjpc/tasks" = read directly from source tree (no rebuild needed).
-# Environment variable takes precedence if set.
 tasks_dir: mjpc/tasks
 # autorun → MJPC_AUTORUN. true starts the sim with planner+action enabled.
 autorun: true
 
-# ============ FM model ============
+# Planner & sweep parameters. <=0 (or commented out) = fall back to task.xml.
+# planner       → MJPC_PLANNER       (0=MPPI, 9=FlowMPPI, 10=FMOnly)
+# horizon       → MJPC_HORIZON       (planning horizon in seconds)
+# trajectories  → MJPC_TRAJECTORIES  (num rollouts per planner step)
+# knots         → MJPC_KNOTS         (spline points per plan)
+planner: 9
+horizon: 0.05
+trajectories: 16
+knots: 30
+
+# FlowMPPI mode (planner=9 only):
+#   cost  (default, option E) — FM influences MPPI via cost residual
+#                               (qpos - q_fm_target). No plan warmstart,
+#                               no winner-take-all. Leak-free.
+#   wta   (ablation)         — legacy: FM PD torque written into
+#                               fm_nominal_.plan as warmstart, per-group
+#                               winner-take-all. Has a side-channel leak
+#                               (root cause unresolved) that drags MPPI
+#                               behavior toward FMOnly.
+# Future: "prior" — FM shifts MPPI's sampling distribution mean (Bayesian
+#                   prior), no cost-term addition.
+fm_mode: cost
+
+# FM_track cost SCALE (multiplies residual; effective weight = task_weight * SCALE^2).
+# 0 = FM_track cost off (MPPI baseline). 1.5 = sweet spot from sweep.
+# Only active when planner=FlowMPPI (mode=cost). Stock MPPI ignores.
+fm_track_scale: 1.5
+
+# ============ CostForce ============
+# force_mode:
+#   "hinge" (default) — upper-bound safety cap `max(0, F_press_z − f_max)`.
+#                       used by FlowMPPI/FMOnly (FM handles z-direction press).
+#   "track"           — quadratic tracking `(F_press_z − f_track)`.
+#                       used by MPPI baseline (hybrid pos+force). f_track is
+#                       derived from task.xml `F_des` z-component (negated):
+#                       e.g. F_des=(0 0 −5) → f_track = 5 N press magnitude.
+# f_max (N)        — threshold for hinge mode. Press above this is penalized.
+# force_scale      — residual multiplier (effective weight = task * scale^2).
+# task.xml `EE_Force` weight must be > 0 for any CostForce contribution.
+force_mode: hinge
+f_max: 25.0
+force_scale: 1.0
+
+# ============ Guide model selection ============
+# guide_type:
+#   "fm"  (default) — FM-DiT teacher (ODE integration, async chunk).
+#   "mlp"           — distilled MLP student (one-shot, synchronous).
+# Env var MJPC_GUIDE_TYPE overrides this value.
+guide_type: fm
+
+# ============ FM model (guide_type=fm) ============
 # Env vars MJPC_FM_CKPT / MJPC_FM_STATS override these paths if set.
 fm_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/flow_policy.onnx
 fm_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/normalization_stats.npz
 fm_chunk_dt: 0.020          # FM action interval (s). 50 Hz default.
 fm_te_decay: 0.01           # TE blend exp decay weight: w_i = exp(-decay * i)
 fm_te_buffer: 10            # max chunks held in temporal-ensemble buffer
+# Flow Matching ODE integration steps. Lower = faster inference, less accurate.
+# 20 default ≈ 32ms (CPU). 12 ≈ ~20ms (matches chunk_dt). 5 ≈ ~8ms.
+fm_ode_steps: 12
+
+# ============ MLP student model (guide_type=mlp) ============
+# Env vars MJPC_MLP_CKPT / MJPC_MLP_STATS override these paths if set.
+# Leave both empty until the distilled MLP ONNX is exported.
+mlp_checkpoint:
+mlp_stats:
 
 # ============ Tracking enhancements (eval_circle_v24) ============
 # lookahead: feed FM a future goal_pos at (t + lookahead). 0 disables.
 #   eval_circle_v24 best = 0.14 (single-thread); mjpc multi-thread = 0.24.
 lookahead: 0.24
 # no_temporal_ensemble: use only the latest FM chunk (no blend with older).
-no_temporal_ensemble: true
+no_temporal_ensemble: false
 # chunk_idx: which entry of FM chunk (0..H-1) to use as q_target.
 #   H-1 = horizon end, pairs with lookahead to track moving targets.
 chunk_idx: 9
 # vel_ff: PD Kd term uses (qdot_d - qdot) instead of (0 - qdot),
 #   where qdot_d = (chunk[k+1] - chunk[k]) / fm_chunk_dt.
 vel_ff: true
+# fm_chunk_advance: if true, q_fm_target advances along q_d trajectory in real
+# time (chunk_idx becomes upper bound). Reset to 0 when new FM chunk arrives.
+# If false, q_fm_target is fixed at chunk_idx (legacy constant-lookahead mode).
+fm_chunk_advance: true
 
 # ============ PD control law (FMOnly + FlowMPPI warmstart) ============
 # tau = M @ (kp*(q_d - q) + kd*(qdot_d - qdot)) + qfrc_bias  (per joint, clipped)

@@ -138,6 +138,14 @@ class SamplingPlanner : public RankedPlanner {
   // ----- noise ----- //
   double noise_exploration[2] = {0};  // stds for sampling: N(0, exploration)
   std::vector<double> noise;
+
+  // MPPI softmax temperature (read from numeric "sampling_lambda" in xml,
+  // default 1.0). Lower lambda → sharper softmax (closer to argmin).
+  double mppi_lambda_ = 1.0;
+
+  // Per-joint noise std (read from numeric "sampling_std_per_joint" in xml).
+  // Empty = fallback to legacy 0.5*ctrlrange scaling. Matches FlowMPPI scheme.
+  std::vector<double> noise_std_per_joint_;
 mjpc::spline::SplineInterpolation interpolation_ =
       mjpc::spline::SplineInterpolation::kZeroSpline;
 

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -39,6 +40,7 @@
 #include "mjpc/planners/include.h"
 #include "mjpc/task.h"
 #include "mjpc/threadpool.h"
+#include "mjpc/timing_globals.h"
 #include "mjpc/trajectory.h"
 #include "mjpc/utilities.h"
 
@@ -86,8 +88,16 @@ void Agent::Initialize(const mjModel* model) {
     mju_error("Ctrl limits required for all actuators.\n");
   }
 
-  // planner
+  // planner — MJPC_PLANNER env var overrides task.xml for sweep experiments
+  // (0=Sampling/MPPI, 9=FlowMPPI, 10=FMOnly, etc.).
   planner_ = GetNumberOrDefault(0, model, "agent_planner");
+  if (const char* e = std::getenv("MJPC_PLANNER"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v >= 0) {
+      planner_ = v;
+      std::fprintf(stderr, "[Agent] MJPC_PLANNER override: planner=%d\n", v);
+    }
+  }
 
   // estimator
   estimator_ =
@@ -97,11 +107,27 @@ void Agent::Initialize(const mjModel* model) {
   integrator_ =
       GetNumberOrDefault(model->opt.integrator, model, "agent_integrator");
 
-  // planning horizon
+  // planning horizon — MJPC_HORIZON env var (seconds) overrides task.xml for
+  // sweep experiments (FlowMPPI vs MPPI param comparison).
   horizon_ = GetNumberOrDefault(0.5, model, "agent_horizon");
+  if (const char* e = std::getenv("MJPC_HORIZON"); e && e[0]) {
+    double v = std::atof(e);
+    if (v > 0) {
+      horizon_ = v;
+      std::fprintf(stderr, "[Agent] MJPC_HORIZON override: horizon=%g s\n", v);
+    }
+  }
 
-  // time step
+  // time step — MJPC_AGENT_TIMESTEP env var overrides task.xml (used by the
+  // dynamics-accuracy ablation in step C of the FlowMPPI hypothesis chain).
   timestep_ = GetNumberOrDefault(1.0e-2, model, "agent_timestep");
+  if (const char* e = std::getenv("MJPC_AGENT_TIMESTEP"); e && e[0]) {
+    double v = std::atof(e);
+    if (v > 0) {
+      timestep_ = v;
+      std::fprintf(stderr, "[Agent] MJPC_AGENT_TIMESTEP override: dt=%g s\n", v);
+    }
+  }
 
   // planning steps
   steps_ = mju_max(mju_min(horizon_ / timestep_ + 1, kMaxTrajectoryHorizon), 1);
@@ -330,6 +356,9 @@ void Agent::PlanIteration(ThreadPool* pool) {
           std::chrono::duration_cast<std::chrono::microseconds>(
               std::chrono::steady_clock::now() - agent_start)
               .count();
+      // expose for CSV logger (fr3.cc reads this)
+      g_plan_time_ms.store(agent_compute_time_ * 1e-3,
+                           std::memory_order_relaxed);
 
       // counter
       count_ += 1;
@@ -365,10 +394,49 @@ void Agent::Plan(std::atomic<bool>& exitrequest,
   // instantiate thread pool
   ThreadPool pool(planner_threads_);
 
+  // ----- Planning mode: async (default) vs sync ----- //
+  // Applies to ALL planners (sampling / FlowMPPI / FMOnly) since the throttle
+  // wraps the shared PlanIteration() call.
+  //
+  //   MJPC_PLAN_MODE=async  (default): planner free-runs, refining the nominal
+  //       as many times as it can per control step (mjpc native behaviour).
+  //   MJPC_PLAN_MODE=sync : planner does ~1 PlanIteration per control step,
+  //       mimicking a synchronous control loop (CUDA-style: 1 plan / step).
+  //
+  // Sync period = control step = agent_timestep (numeric in xml, default 10ms).
+  // MJPC_SYNC_PLAN=<ms> still works as an explicit override of the period.
+  enum class PlanMode { kAsync, kSync };
+  static double ctrl_period_ms = [this]() {
+    double dt = GetNumberOrDefault(0.01, model_, "agent_timestep");
+    return dt * 1000.0;  // s → ms
+  }();
+  static double sync_plan_ms = [ctrl = ctrl_period_ms]() {
+    // Explicit period override.
+    if (const char* e = std::getenv("MJPC_SYNC_PLAN"); e && e[0])
+      return std::atof(e);
+    // Mode-based: sync → control period, async → 0 (no throttle).
+    if (const char* e = std::getenv("MJPC_PLAN_MODE"); e && e[0]) {
+      std::string v = e;
+      if (v == "sync") return ctrl;
+    }
+    return 0.0;  // async default
+  }();
+
   // main loop
   while (!exitrequest.load()) {
     if (model_ && uiloadrequest.load() == 0) {
+      auto t0 = std::chrono::steady_clock::now();
       PlanIteration(&pool);
+      if (sync_plan_ms > 0.0) {
+        double elapsed_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count();
+        double remain = sync_plan_ms - elapsed_ms;
+        if (remain > 0.0) {
+          std::this_thread::sleep_for(
+              std::chrono::duration<double, std::milli>(remain));
+        }
+      }
     }
   }  // exitrequest sent -- stop planning
 }
@@ -848,7 +916,7 @@ void Agent::PlotInitialize() {
   // title
   mju::strcpy_arr(plots_.cost.title, "Objective");
   mju::strcpy_arr(plots_.action.title, "Actions");
-  mju::strcpy_arr(plots_.planner.title, "Agent (log10)");
+  mju::strcpy_arr(plots_.planner.title, "F_press_z [N]");
   mju::strcpy_arr(plots_.timer.title, "CPU time (msec)");
 
   // x-labels
@@ -1114,30 +1182,36 @@ void Agent::Plots(const mjData* data, int shift) {
   mju::strcpy_arr(plots_.action.linename[0], "History");
   mju::strcpy_arr(plots_.action.linename[dim_action], "Prediction");
 
-  // ----- planner ----- //
-
-  // ranges
+  // ----- F_press_z (replaces planner plot) ----- //
   plots_.planner.range[0][0] = -100;
   plots_.planner.range[0][1] = 0;
-  plots_.planner.range[1][0] = -6.0;
-  plots_.planner.range[1][1] = 6.0;
+  plots_.planner.range[1][0] = -10.0;
+  plots_.planner.range[1][1] = 80.0;
   plots_.timer.range[0][0] = -100;
   plots_.timer.range[0][1] = 0;
   plots_.timer.range[1][0] = 0.0;
 
-  // skip if planning off
+  // F_press_z: site-local z component of constraint force at sensor_site.
+  // sensor_site lives on the (near-massless) temp body, so the reading
+  // directly reflects contact reaction force in the +z press direction:
+  //   free space → ~0 N,  press → positive (e.g. +30 N).
+  // No gravity comp / world rotation needed (older code applied both,
+  // which inverted sign and added a -mg offset).
+  double F_press_z = 0.0;
+  double* F_sensor = SensorByName(model_, data, "hand_force");
+  if (F_sensor) F_press_z = F_sensor[2];
+  double fz_bounds[2] = {-10.0, 80.0};
+  PlotUpdateData(&plots_.planner, fz_bounds,
+                 plots_.planner.linedata[0][0] + 1, F_press_z, 100, 0, 0, 1,
+                 -100);
+  char fz_label[64];
+  std::snprintf(fz_label, sizeof(fz_label), "F_press_z = %+6.2f N", F_press_z);
+  mju::strcpy_arr(plots_.planner.linename[0], fz_label);
+  plots_.planner.range[1][1] = fz_bounds[1];
+  plots_.planner.range[1][0] = fz_bounds[0];
+
+  // skip if planning off (timer below depends on planner running)
   if (!plan_enabled) return;
-
-  // planner-specific plotting
-  int planner_shift[2] {0, 0};
-  ActivePlanner().Plots(&plots_.planner, &plots_.timer, 0, 1, plan_enabled,
-                        planner_shift);
-
-  // estimator-specific plotting
-  if (ActiveEstimatorIndex() > 0) {
-    ActiveEstimator().Plots(&plots_.planner, &plots_.timer, planner_shift[0],
-                            planner_shift[1] + 1, plan_enabled, NULL);
-  }
 
   // total (agent) compute time
   double timer_bounds[2] = {0.0, 1.0};

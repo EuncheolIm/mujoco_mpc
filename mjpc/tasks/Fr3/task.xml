@@ -36,7 +36,12 @@
     <!-- // =============== EC =============== // -->
     <!-- WIP CHUNK 3: force-control numerics -->
     <!-- <numeric name="F_des" size="3" data="0 0 -9"/> -->
-    <numeric name="F_des" size="3" data="0 0 -5"/>
+    <numeric name="F_des" size="3" data="0 0 -10"/>
+
+    <!-- FM-as-cost-bias target joint position (option E). Updated each
+         FlowMPPI planner step by UpdateFM(); CostFMTrack residual = qpos - this.
+         Default = HOME_Q (zero residual when FM is not loaded). -->
+    <numeric name="q_fm_target" size="7" data="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
 
 
     <!-- Subtree weight of hand_site's parent body: hand (0.73) + two
@@ -45,11 +50,15 @@
          F_press_z. Retune if the EE assembly changes. -->
     <numeric name="ee_weight_N" data="7.46"/>
     <numeric name="approach_time"    data="2.0"/>
+    <!-- Approach z (world frame) — Phase 1 target z. Robot moves to
+         (mocap_x, mocap_y, approach_z) under full 3D position control.
+         table_top = 0.30 m → approach_z = 0.35 m means 5 cm above table. -->
+    <numeric name="approach_z"       data="0.32"/>
     <!-- Goal-reach criterion for switching from approach -> hybrid:
          EE site within `hybrid_switch_dist` (m) AND
          orientation axis-angle error < `hybrid_switch_angle` (rad).
          After both met, wait `hybrid_switch_delay` (s) before switching. -->
-    <numeric name="hybrid_switch_dist"  data="0.02"/>
+    <numeric name="hybrid_switch_dist"  data="0.005"/>
     <numeric name="hybrid_switch_angle" data="0.087"/>  <!-- ~5 deg -->
     <numeric name="hybrid_switch_delay" data="0.5"/>
     <!-- Wipe (polishing) trajectory parameters. Read by fr3.cc + cost_fn.cc. -->
@@ -89,7 +98,7 @@
       <geom name="table_top" type="box" pos="0 0 0.28" size="0.30 0.35 0.02"
             rgba="0.55 0.35 0.18 1" friction="1 0.005 0.0001"
             contype="1" conaffinity="1"
-            condim="3" solimp="0.9 0.99 0.001" solref="0.04 1"/>
+            condim="3" solimp="0.9 0.99 0.001" solref="0.08 1"/>
       <geom name="leg_fl" type="cylinder" pos=" 0.25  0.30 0.13" size="0.02 0.13"
             rgba="0.4 0.25 0.12 1" contype="0" conaffinity="0"/>
       <geom name="leg_fr" type="cylinder" pos=" 0.25 -0.30 0.13" size="0.02 0.13"
@@ -156,11 +165,18 @@
     <user name="joint_cent"        dim="7" user="2 20    0 5000     1"/>
     <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>
     <user name="EE_Force"          dim="3" user="2 100      0 2000     1"/>
+    <!-- <user name="EE_Force"          dim="3" user="2 0      0 2000     1"/> -->
+
     <!-- <user name="EE_Force"          dim="3" user="2 100      0 100      1"/> -->
     <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
     <!-- EE +z velocity penalty: discourages lift transient (asymmetric, only
          positive zvel penalized). -->
-    <user name="EE_zvel"           dim="1" user="2 10000     0 2000     0.01"/>
+    <user name="EE_zvel"           dim="1" user="2 20000     0 100000   0.01"/>
+
+    <!-- FM joint-target tracking (option E). Effective weight is
+         task_weight * MJPC_FM_TRACK_SCALE^2. MJPC_FM_TRACK_SCALE=0 disables.
+         Sweep SCALE for FM-bias intensity. -->
+    <user name="FM_track"          dim="7" user="2 10000   0 50000    0.01"/>
 
     <framepos name="hand" objtype="site" objname="hand_site"/>
     <framequat name="hand_orient" objtype="site" objname="hand_site"/>
