@@ -92,6 +92,14 @@ add_library(
   tasks/Fr3/cost_fn.h
   tasks/Fr3/dynamics.cc
   tasks/Fr3/dynamics.h
+  tasks/Fr3MazeForce/fr3_maze_force.cc
+  tasks/Fr3MazeForce/fr3_maze_force.h
+  tasks/Fr3MazeForce/cost_fn.cc
+  tasks/Fr3MazeForce/cost_fn.h
+  tasks/Fr3Obstacle/fr3_obstacle.cc
+  tasks/Fr3Obstacle/fr3_obstacle.h
+  tasks/Fr3Obstacle/cost_fn.cc
+  tasks/Fr3Obstacle/cost_fn.h
 
   # MPPI
   planners/MPPI/planner.cc
@@ -184,6 +192,8 @@ add_library(
   policies/onnx_policy.h
   policies/mlp_policy.cc
   policies/mlp_policy.h
+  policies/clik_policy.cc
+  policies/clik_policy.h
   simulate.cc
   simulate.h
   task.cc

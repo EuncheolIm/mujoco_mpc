@@ -29,6 +29,7 @@
 
 #include "mjpc/planners/planner.h"
 #include "mjpc/planners/FlowMPPI/policy.h"
+#include "mjpc/policies/clik_policy.h"
 #include "mjpc/policies/mlp_policy.h"
 #include "mjpc/policies/onnx_policy.h"
 #include "mjpc/spline/spline.h"
@@ -233,6 +234,14 @@ mjpc::spline::SplineInterpolation interpolation_ =
   std::unique_ptr<MLPGuidePolicy> mlp_policy_;
   bool mlp_loaded_ = false;
   bool mlp_tried_  = false;
+  // CLIK analytic guide (optional, selected via FMConfig::guide_type=="clik").
+  // No ONNX dependency — unrolls a damped-least-squares IK loop H times
+  // against the (pos, rpy) goal. Used as an ablation baseline that swaps
+  // out the learned MLP/FM prior for a hand-engineered analytic prior
+  // while keeping the same cost-bias mechanism.
+  std::unique_ptr<CLIKGuidePolicy> clik_policy_;
+  bool clik_loaded_ = false;
+  bool clik_tried_  = false;
   std::deque<std::vector<Eigen::VectorXd>> te_chunks_;
   Eigen::VectorXd prev_state_;
   Eigen::VectorXd prev_action_;

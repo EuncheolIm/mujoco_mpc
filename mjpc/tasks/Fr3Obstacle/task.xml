@@ -1,0 +1,118 @@
+<mujoco model="Fr3Obstacle">
+  <include file="../common.xml"/>
+
+  <size memory="1M" nuserdata="1"/>
+
+  <custom>
+    <!-- Default = MPPI baseline. Switch to 9 (FlowMPPI) via env / yaml. -->
+    <numeric name="agent_planner" data="0"/>
+    <numeric name="agent_horizon" data="0.10"/>
+    <numeric name="agent_timestep" data="0.01"/>
+
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="128"/>
+    <numeric name="sampling_spline_points" data="30"/>
+    <numeric name="sampling_representation" data="0"/>
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="0.1"/>
+    <numeric name="sampling_dc_noise" data="1"/>
+    <numeric name="sampling_std_per_joint" size="7" data="2 2 2 2 1 1 1"/>
+    <numeric name="gradient_spline_points" data="6"/>
+
+    <!-- Reach target (world frame EE goal). -->
+    <numeric name="reach_target_xyz" size="3" data="0.72 0.00 0.34"/>
+
+    <!-- Single sphere obstacle. FM prior knows nothing about it; the
+         Obstacle cost is the only signal that drives avoidance.
+         Safety: keep |ee - obstacle_xyz| > obstacle_radius + obstacle_margin. -->
+    <numeric name="obstacle_xyz"    size="3" data="0.56 0.00 0.34"/>
+    <numeric name="obstacle_radius" data="0.06"/>
+    <numeric name="obstacle_margin" data="0.02"/>
+
+    <!-- FM-as-cost-bias default (HOME_Q). FlowMPPI overwrites at runtime. -->
+    <numeric name="q_fm_target" size="7" data="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+
+    <!-- descent_time / linear_time = 0 -> mocap pinned at target from t=0.
+         MPPI searches the obstacle-avoiding path freely. -->
+    <numeric name="descent_time" data="0.0"/>
+    <numeric name="linear_time"  data="0.0"/>
+  </custom>
+
+  <statistic extent="0.8" center="0.2 0 0.4"/>
+
+  <visual>
+    <quality shadowsize="8192"/>
+    <global azimuth="120" elevation="-20"/>
+    <scale framelength=".3" framewidth=".03"/>
+  </visual>
+
+  <default>
+    <geom solref=".001 1"/>
+  </default>
+
+  <worldbody>
+    <site name="world"/>
+    <light pos="0 -0.1 0.5" dir="0 0.2 -1" diffuse="0.7 0.7 0.7" specular="0.3 0.3 0.3"
+        directional="true" castshadow="true"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
+
+    <!-- Single sphere obstacle (gray). contype/conaffinity=1 so MuJoCo
+         generates real contacts with FR3 collision geoms — robot is
+         physically blocked when avoidance fails. Detect via data->ncon /
+         the <contact><pair> entries below. solref slightly softened so
+         contact is visible but not explosive. -->
+    <body name="obstacle" pos="0.56 0 0.34">
+      <geom name="obstacle" type="sphere" size="0.06"
+            rgba="0.50 0.50 0.55 0.75"
+            contype="1" conaffinity="1" solref=".005 1"/>
+    </body>
+
+    <!-- Start / target visual markers. -->
+    <site name="start_marker"  pos="0.40 0 0.34" size="0.018" rgba="0.10 0.95 0.20 0.9"/>
+    <site name="target_marker" pos="0.72 0 0.34" size="0.018" rgba="0.95 0.10 0.10 0.9"/>
+  </worldbody>
+
+  <contact>
+    <exclude body1="world" body2="left_finger"/>
+    <exclude body1="world" body2="right_finger"/>
+    <exclude body1="left_finger" body2="right_finger"/>
+
+    <!-- Explicit obstacle/robot pairs for the named FR3 collision geoms.
+         hand_c + finger collision geoms are unnamed; they pair via
+         default contype/conaffinity automatic matching. -->
+    <pair geom1="obstacle" geom2="fr3_link0_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link1_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link2_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link3_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link4_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link5_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link6_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link7_collision"/>
+  </contact>
+
+  <keyframe>
+    <key name="home" qpos="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+  </keyframe>
+
+  <sensor>
+    <user name="Reach_pos"         dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Reach_ori"         dim="3" user="2 50000   0 500000   0.01"/>
+    <!-- Sparse binary: residual = N (number of tubes inside safety zone,
+         integer 0..4). With weight 30000 (mppi_tau.cu's per-collision
+         penalty) the framework's squared sum yields cost = 30000 * N^2:
+         N=1 → 30000, N=2 → 120000, N=3 → 270000, N=4 → 480000. -->
+    <user name="Obstacle"          dim="1" user="2 30000   0 300000   0.01"/>
+    <user name="joint_cent"        dim="7" user="2 20      0 5000     1"/>
+    <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>
+    <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
+    <user name="FM_track"          dim="7" user="2 10000   0 50000    0.01"/>
+
+    <framepos  name="hand"               objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient"        objtype="site" objname="hand_site"/>
+    <framepos  name="hand_target"        objtype="site" objname="hand_copy_site"/>
+    <framequat name="hand_target_orient" objtype="site" objname="hand_copy_site"/>
+    <framepos  name="trace0"             objtype="site" objname="hand_site"/>
+  </sensor>
+
+  <include file="fr3_yeshand.xml"/>
+</mujoco>

@@ -40,45 +40,21 @@ knots: 30
 #                   prior), no cost-term addition.
 fm_mode: cost
 
-# CostFMTrack lookup mode (FlowMPPI cost-mode only).
-#   true  (default) — step-indexed: rollout step h reads chunk[(t-t0)/chunk_dt]
-#                     with linear interp; each step sees its time-aligned q_d.
-#                     Theoretically correct, ~10% better xy on FR3 wipe.
-#   false           — FM-original (legacy): single anchor point per plan iter;
-#                     all rollout steps see the same q_target.
-# Env MJPC_FM_STEP_INDEXED=0|1 overrides.
-fm_step_indexed: true
-
 # FM_track cost SCALE (multiplies residual; effective weight = task_weight * SCALE^2).
 # 0 = FM_track cost off (MPPI baseline). 1.5 = sweet spot from sweep.
 # Only active when planner=FlowMPPI (mode=cost). Stock MPPI ignores.
 fm_track_scale: 1.5
 
-# ============ CostForce ============
-# force_mode:
-#   "hinge" (default) — upper-bound safety cap `max(0, F_press_z − f_max)`.
-#                       used by FlowMPPI/FMOnly (FM handles z-direction press).
-#   "track"           — quadratic tracking `(F_press_z − f_track)`.
-#                       used by MPPI baseline (hybrid pos+force). f_track is
-#                       derived from task.xml `F_des` z-component (negated):
-#                       e.g. F_des=(0 0 −5) → f_track = 5 N press magnitude.
-# f_max (N)        — threshold for hinge mode. Press above this is penalized.
-# force_scale      — residual multiplier (effective weight = task * scale^2).
-# task.xml `EE_Force` weight must be > 0 for any CostForce contribution.
-force_mode: hinge
+# CostForce upper-bound hinge: residual = force_scale * max(0, F_press_z - f_max)
+# (penalize pressing harder than f_max; zero cost otherwise).
+# task.xml EE_Force weight must be > 0 for this to matter (currently 100).
+# Sweep best: f_max=25, force_scale=1.0 (xy 2.5mm, contact 50%, Fz p95 ≈ 28N).
+# Lower f_max → tighter cap, fewer contacts; higher force_scale → stricter
+# enforcement of the bound (less overshoot).
 f_max: 25.0
 force_scale: 1.0
 
-# ============ Guide model selection ============
-# guide_type:
-#   "fm"   (default) — FM-DiT teacher (ODE integration, async chunk).
-#   "mlp"            — distilled MLP student (one-shot, synchronous).
-#   "clik"           — analytic DLS Closed-Loop IK (no learned prior).
-#                      Ablation baseline for "framework is prior-agnostic".
-# Env var MJPC_GUIDE_TYPE overrides this value.
-guide_type: fm
-
-# ============ FM model (guide_type=fm) ============
+# ============ FM model ============
 # Env vars MJPC_FM_CKPT / MJPC_FM_STATS override these paths if set.
 fm_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/flow_policy.onnx
 fm_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/normalization_stats.npz
@@ -88,24 +64,6 @@ fm_te_buffer: 10            # max chunks held in temporal-ensemble buffer
 # Flow Matching ODE integration steps. Lower = faster inference, less accurate.
 # 20 default ≈ 32ms (CPU). 12 ≈ ~20ms (matches chunk_dt). 5 ≈ ~8ms.
 fm_ode_steps: 12
-
-# ============ MLP student model (guide_type=mlp) ============
-# Env vars MJPC_MLP_CKPT / MJPC_MLP_STATS override these paths if set.
-# Leave both empty until the distilled MLP ONNX is exported.
-mlp_checkpoint:
-mlp_stats:
-
-# ============ CLIK analytic guide (guide_type=clik) ============
-# Hand-engineered DLS Closed-Loop IK unrolled `clik_horizon` times to build
-# a q_d chunk. No learned prior, no ONNX. Used as an ablation to show the
-# framework treats any prior (learned or analytic) as an interchangeable
-# plug-in via cost residual. Defaults match data_collection/
-# collect_ik_data_v3.py --step_target. Env vars MJPC_CLIK_KP_POS /
-# MJPC_CLIK_KP_ORI / MJPC_CLIK_DAMP / MJPC_CLIK_HORIZON override.
-clik_kp_pos:  10.0
-clik_kp_ori:  10.0
-clik_damp:    0.01
-clik_horizon: 10
 
 # ============ Tracking enhancements (eval_circle_v24) ============
 # lookahead: feed FM a future goal_pos at (t + lookahead). 0 disables.

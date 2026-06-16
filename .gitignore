@@ -33,3 +33,11 @@ MJDATA.TXT
 MJMODEL.TXT
 # Python
 python/dist/
+# Overleaf draft (do not commit)
+overleaf/
+# Build artifacts
+build_asan/
+# Experiment outputs
+out/
+sweep_*/
+auto_mlp_cost_run/

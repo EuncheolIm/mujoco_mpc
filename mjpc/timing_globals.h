@@ -29,6 +29,21 @@ inline std::atomic<double> g_qfm_target[7] = {
 // "HOME-anchor" pull during Stage 1 (first ~100ms before FM first chunk).
 inline std::atomic<bool> g_qfm_valid{false};
 
+// ---- Step-indexed FM/MLP chunk publication (opt-in) ---------------------
+// PublishFMChunk writes the full cached chunk (q_d_traj_cached_) here, plus
+// the absolute sim-time when the chunk was received. CostFMTrack, when the
+// env MJPC_FM_STEP_INDEXED is on, uses data->time to look up the time-aligned
+// q_d (linear interp between chunk[idx_lo] and chunk[idx_hi]) — rollout step h
+// sees chunk[h * agent_timestep / chunk_dt] rather than a single anchor.
+//
+// Layout: g_qfm_chunk[h * 7 + j] for joint j of chunk step h.
+// kQfmChunkMaxH must be >= MLP/FM horizon (currently 10).
+constexpr int kQfmChunkMaxH = 16;
+inline std::atomic<int>    g_qfm_chunk_H{0};            // valid step count (0 = none)
+inline std::atomic<double> g_qfm_chunk_dt{0.020};       // chunk step duration (s)
+inline std::atomic<double> g_qfm_chunk_t0{-1.0};        // sim time when chunk[0] was received
+inline std::atomic<double> g_qfm_chunk[kQfmChunkMaxH * 7];
+
 }  // namespace mjpc
 
 #endif  // MJPC_TIMING_GLOBALS_H_

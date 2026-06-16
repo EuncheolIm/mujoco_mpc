@@ -1013,12 +1013,34 @@ void FlowMPPIPlanner::CopyCandidateToPolicy(int candidate) {
 
 void FlowMPPIPlanner::UpdateFM() {
   const FMConfig& fmc = GetFMConfig();
-  const bool use_mlp = (fmc.guide_type == "mlp");
+  const bool use_mlp  = (fmc.guide_type == "mlp");
+  const bool use_clik = (fmc.guide_type == "clik");
 
-  // Lazy load guide model (FM-DiT or MLP student, picked by guide_type).
-  // On failure the guide stays disabled and CostFMTrack sees g_qfm_valid=false
-  // (residual returns 0). No fallback FM-load when MLP is requested but fails.
-  if (use_mlp) {
+  // Lazy load guide model (FM-DiT, MLP student, or analytic CLIK; picked
+  // by guide_type). On failure the guide stays disabled and CostFMTrack sees
+  // g_qfm_valid=false (residual returns 0). No cross-fallback between the
+  // three branches.
+  if (use_clik) {
+    if (!clik_tried_) {
+      clik_tried_ = true;
+      try {
+        clik_policy_ = std::make_unique<CLIKGuidePolicy>(
+            fmc.clik_kp_pos, fmc.clik_kp_ori, fmc.clik_damp,
+            fmc.fm_chunk_dt, fmc.clik_horizon);
+        clik_loaded_ = true;
+        std::printf("[FlowMPPI] CLIK guide loaded: kp_pos=%.1f kp_ori=%.1f "
+                    "damp=%.3f dt=%.3f H=%d\n",
+                    fmc.clik_kp_pos, fmc.clik_kp_ori, fmc.clik_damp,
+                    fmc.fm_chunk_dt, fmc.clik_horizon);
+      } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[FlowMPPI] CLIK guide exception: %s — guide disabled.\n",
+            e.what());
+        clik_policy_.reset();
+      }
+    }
+    if (!clik_loaded_ || !clik_policy_ || !model) return;
+  } else if (use_mlp) {
     if (!mlp_tried_) {
       mlp_tried_ = true;
       const std::string& ckpt  = fmc.mlp_checkpoint;
@@ -1119,12 +1141,16 @@ void FlowMPPIPlanner::UpdateFM() {
   mj_kinematics(model, ws_data_);
 
   // Resolve dimensions from whichever guide is active.
-  const int sd = use_mlp ? mlp_policy_->getStateDim()
-                         : fm_policy_->getStateDim();
-  const int ad = use_mlp ? mlp_policy_->getActionDim()
-                         : fm_policy_->getActionDim();
-  const bool include_ee = (use_mlp ? mlp_policy_->includesEE()
-                                   : fm_policy_->includesEE()) && sd >= 17;
+  const int sd = use_clik ? clik_policy_->getStateDim()
+                : use_mlp  ? mlp_policy_->getStateDim()
+                           : fm_policy_->getStateDim();
+  const int ad = use_clik ? clik_policy_->getActionDim()
+                : use_mlp  ? mlp_policy_->getActionDim()
+                           : fm_policy_->getActionDim();
+  const bool include_ee =
+      (use_clik ? clik_policy_->includesEE()
+       : use_mlp  ? mlp_policy_->includesEE()
+                  : fm_policy_->includesEE()) && sd >= 17;
 
   Eigen::VectorXd s_vec = Eigen::VectorXd::Zero(sd);
   for (int i = 0; i < 7; ++i) {
@@ -1183,9 +1209,17 @@ void FlowMPPIPlanner::UpdateFM() {
   }
   if ((int)prev_state_.size() != sd) prev_state_ = s_vec;
 
-  // Guide-specific chunk acquisition. Both paths push into te_chunks_, so
+  // Guide-specific chunk acquisition. All paths push into te_chunks_, so
   // the downstream TE blend + q_d_traj_cached_ writer is shared.
-  if (use_mlp) {
+  if (use_clik) {
+    std::vector<Eigen::VectorXd> chunk;
+    if (clik_policy_->predictChunk(model, ws_data_, hand_site_id_, goal,
+                                   chunk)) {
+      te_chunks_.push_back(std::move(chunk));
+      if ((int)te_chunks_.size() > fmc.fm_te_buffer) te_chunks_.pop_front();
+      last_chunk_recv_time_ = time;
+    }
+  } else if (use_mlp) {
     std::vector<Eigen::VectorXd> chunk;
     if (mlp_policy_->predictChunk(s_vec, prev_state_, prev_action_, goal,
                                   chunk)) {
@@ -1212,7 +1246,9 @@ void FlowMPPIPlanner::UpdateFM() {
   // rollouts=1 validation.
   if (te_chunks_.empty()) {
     const int H_guide =
-        use_mlp ? mlp_policy_->getHorizon() : fm_policy_->getHorizon();
+        use_clik ? clik_policy_->getHorizon()
+        : use_mlp  ? mlp_policy_->getHorizon()
+                   : fm_policy_->getHorizon();
     const int H = H_guide > 0 ? H_guide : 10;
     std::vector<Eigen::VectorXd> hold_chunk(H, Eigen::VectorXd::Zero(7));
     for (int h = 0; h < H; ++h) {
@@ -1326,6 +1362,23 @@ void FlowMPPIPlanner::PublishFMTarget() {
   // Signal that q_fm_target has been populated with a real FM chunk.
   // CostFMTrack uses this to skip residual computation in Stage 1.
   g_qfm_valid.store(true, std::memory_order_relaxed);
+
+  // ---- Step-indexed chunk publication (for MJPC_FM_STEP_INDEXED cost). ----
+  // Publishes the FULL cached chunk so CostFMTrack can look up the q_d at
+  // each rollout step's data->time, instead of using a single anchor point.
+  // PlanIteration is serialized w.r.t. rollouts (rollouts run inside this
+  // call), so no concurrent reader during the writes below.
+  const int H_pub = std::min((int)q_d_traj_cached_.size(), kQfmChunkMaxH);
+  for (int h = 0; h < H_pub; ++h) {
+    const auto& qh = q_d_traj_cached_[h];
+    const int nj = std::min<int>(7, qh.size());
+    for (int j = 0; j < nj; ++j) {
+      g_qfm_chunk[h * 7 + j].store(qh(j), std::memory_order_relaxed);
+    }
+  }
+  g_qfm_chunk_H.store(H_pub, std::memory_order_relaxed);
+  g_qfm_chunk_dt.store(fmc.fm_chunk_dt, std::memory_order_relaxed);
+  g_qfm_chunk_t0.store(last_chunk_recv_time_, std::memory_order_relaxed);
 }
 
 void FlowMPPIPlanner::ApplyWarmstart() {

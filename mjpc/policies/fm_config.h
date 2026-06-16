@@ -14,8 +14,11 @@ namespace mjpc {
 
 struct FMConfig {
   // Guide model selection.
-  //   "fm"  (default) — FM-DiT (ODE-based, async chunk via ONNXPolicy).
-  //   "mlp"           — distilled MLP student (one-shot, synchronous).
+  //   "fm"   (default) — FM-DiT (ODE-based, async chunk via ONNXPolicy).
+  //   "mlp"            — distilled MLP student (one-shot, synchronous).
+  //   "clik"           — analytic DLS Closed-Loop IK unrolled H times.
+  //                      No learned prior; ablation baseline for the
+  //                      "framework is prior-agnostic" claim.
   // Driven by env MJPC_GUIDE_TYPE; falls back to YAML guide_type.
   std::string guide_type = "fm";
 
@@ -34,6 +37,15 @@ struct FMConfig {
   // MJPC_MLP_CKPT / MJPC_MLP_STATS take precedence over these.
   std::string mlp_checkpoint;
   std::string mlp_stats;
+
+  // CLIK analytic guide (used when guide_type=="clik"). Defaults match
+  // data_collection/collect_ik_data_v3.py --step_target. Env vars
+  // MJPC_CLIK_KP_POS / MJPC_CLIK_KP_ORI / MJPC_CLIK_DAMP / MJPC_CLIK_HORIZON
+  // take precedence.
+  double clik_kp_pos  = 10.0;
+  double clik_kp_ori  = 10.0;
+  double clik_damp    = 0.01;
+  int    clik_horizon = 10;
 
   // Tracking enhancements (eval_circle_v24)
   double lookahead = 0.0;
@@ -69,6 +81,14 @@ struct FMConfig {
   //         (ApplyWarmstart); kept for ablation but has a side-channel
   //         that pulls MPPI behavior toward FMOnly (root cause unresolved).
   std::string fm_mode = "cost";  // MJPC_FM_MODE
+
+  // CostFMTrack lookup mode.
+  //   true  (default) — step-indexed: rollout step h uses chunk[(t-t0)/dt]
+  //                     with linear interp; each step sees its time-aligned
+  //                     q_d reference. Theoretically correct.
+  //   false           — FM-original (legacy): single anchor point per plan
+  //                     iter; all rollout steps see the same q_target.
+  bool fm_step_indexed = true;  // MJPC_FM_STEP_INDEXED (0|1) overrides
 
   // FM_track cost SCALE (MJPC_FM_TRACK_SCALE). <0 = inactive (default —
   // prevents MPPI baseline from being anchored to HOME_Q). >0 activates
@@ -139,10 +159,15 @@ inline const FMConfig& GetFMConfig() {
         else if (key == "trajectories")         c.trajectories = std::atoi(val.c_str());
         else if (key == "knots")                c.knots = std::atoi(val.c_str());
         else if (key == "fm_mode")              c.fm_mode = val;
+        else if (key == "fm_step_indexed")      c.fm_step_indexed = as_bool(val);
         else if (key == "fm_track_scale")       c.fm_track_scale = std::atof(val.c_str());
         else if (key == "force_mode")           c.force_mode = val;
         else if (key == "f_max")                c.f_max = std::atof(val.c_str());
         else if (key == "force_scale")          c.force_scale = std::atof(val.c_str());
+        else if (key == "clik_kp_pos")          c.clik_kp_pos = std::atof(val.c_str());
+        else if (key == "clik_kp_ori")          c.clik_kp_ori = std::atof(val.c_str());
+        else if (key == "clik_damp")            c.clik_damp = std::atof(val.c_str());
+        else if (key == "clik_horizon")         c.clik_horizon = std::atoi(val.c_str());
       }
       std::fprintf(stderr, "[FMConfig] loaded %s\n", path.c_str());
     }
@@ -192,6 +217,24 @@ inline const FMConfig& GetFMConfig() {
       int v = std::atoi(e);
       if (v >= 0) c.chunk_idx = v;
     }
+    if (const char* e = std::getenv("MJPC_FM_STEP_INDEXED"); e && e[0]) {
+      std::string v = e;
+      c.fm_step_indexed = (v == "1" || v == "true" || v == "yes" || v == "on");
+    }
+    // CLIK hyperparameter overrides (guide_type=clik).
+    if (const char* e = std::getenv("MJPC_CLIK_KP_POS"); e && e[0]) {
+      c.clik_kp_pos = std::atof(e);
+    }
+    if (const char* e = std::getenv("MJPC_CLIK_KP_ORI"); e && e[0]) {
+      c.clik_kp_ori = std::atof(e);
+    }
+    if (const char* e = std::getenv("MJPC_CLIK_DAMP"); e && e[0]) {
+      c.clik_damp = std::atof(e);
+    }
+    if (const char* e = std::getenv("MJPC_CLIK_HORIZON"); e && e[0]) {
+      int v = std::atoi(e);
+      if (v > 0) c.clik_horizon = v;
+    }
     std::fprintf(stderr,
         "[FMConfig] guide_type=%s\n"
         "[FMConfig] fm_ckpt=%s\n"
@@ -202,7 +245,8 @@ inline const FMConfig& GetFMConfig() {
         "[FMConfig] lookahead=%.3f no_te=%d chunk_idx=%d vel_ff=%d advance=%d\n"
         "[FMConfig] kp=%.1f kd=%.1f tau_max=[big=%.1f, small=%.1f]\n"
         "[FMConfig] tasks_dir=%s autorun=%d\n"
-        "[FMConfig] planner=%d horizon=%.3f trajectories=%d knots=%d fm_mode=%s\n",
+        "[FMConfig] planner=%d horizon=%.3f trajectories=%d knots=%d fm_mode=%s step_indexed=%d\n"
+        "[FMConfig] clik kp_pos=%.2f kp_ori=%.2f damp=%.3f horizon=%d\n",
         c.guide_type.c_str(),
         c.fm_checkpoint.c_str(), c.fm_stats.c_str(),
         c.mlp_checkpoint.c_str(), c.mlp_stats.c_str(),
@@ -211,7 +255,9 @@ inline const FMConfig& GetFMConfig() {
         (int)c.fm_chunk_advance,
         c.kp, c.kd, c.tau_max_big, c.tau_max_small,
         c.tasks_dir.c_str(), (int)c.autorun,
-        c.planner, c.horizon, c.trajectories, c.knots, c.fm_mode.c_str());
+        c.planner, c.horizon, c.trajectories, c.knots, c.fm_mode.c_str(),
+        (int)c.fm_step_indexed,
+        c.clik_kp_pos, c.clik_kp_ori, c.clik_damp, c.clik_horizon);
     return c;
   }();
   return cfg;

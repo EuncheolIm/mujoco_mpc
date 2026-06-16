@@ -36,7 +36,7 @@
     <!-- // =============== EC =============== // -->
     <!-- WIP CHUNK 3: force-control numerics -->
     <!-- <numeric name="F_des" size="3" data="0 0 -9"/> -->
-    <numeric name="F_des" size="3" data="0 0 -10"/>
+    <numeric name="F_des" size="3" data="0 0 -5"/>
 
     <!-- FM-as-cost-bias target joint position (option E). Updated each
          FlowMPPI planner step by UpdateFM(); CostFMTrack residual = qpos - this.
@@ -50,21 +50,16 @@
          F_press_z. Retune if the EE assembly changes. -->
     <numeric name="ee_weight_N" data="7.46"/>
     <numeric name="approach_time"    data="2.0"/>
-    <!-- Approach z (world frame) — Phase 1 target z. Robot moves to
-         (mocap_x, mocap_y, approach_z) under full 3D position control.
-         table_top = 0.30 m → approach_z = 0.35 m means 5 cm above table. -->
-    <numeric name="approach_z"       data="0.32"/>
     <!-- Goal-reach criterion for switching from approach -> hybrid:
          EE site within `hybrid_switch_dist` (m) AND
          orientation axis-angle error < `hybrid_switch_angle` (rad).
          After both met, wait `hybrid_switch_delay` (s) before switching. -->
-    <numeric name="hybrid_switch_dist"  data="0.005"/>
+    <numeric name="hybrid_switch_dist"  data="0.02"/>
     <numeric name="hybrid_switch_angle" data="0.087"/>  <!-- ~5 deg -->
     <numeric name="hybrid_switch_delay" data="0.5"/>
     <!-- Wipe (polishing) trajectory parameters. Read by fr3.cc + cost_fn.cc. -->
     <numeric name="wipe_stabilize" data="5.0"/>
-    <!-- <numeric name="wipe_radius"    data="0.05"/> -->
-    <numeric name="wipe_radius"    data="0.1"/>
+    <numeric name="wipe_radius"    data="0.05"/>
     <numeric name="wipe_period"    data="6.28318530718"/>
     <!-- // ================================== // -->
   </custom>
@@ -177,7 +172,7 @@
     <!-- FM joint-target tracking (option E). Effective weight is
          task_weight * MJPC_FM_TRACK_SCALE^2. MJPC_FM_TRACK_SCALE=0 disables.
          Sweep SCALE for FM-bias intensity. -->
-    <user name="FM_track"          dim="7" user="2 10000   0 50000    0.01"/>
+    <user name="FM_track"          dim="7" user="2 0       0 50000    0.01"/>
 
     <framepos name="hand" objtype="site" objname="hand_site"/>
     <framequat name="hand_orient" objtype="site" objname="hand_site"/>

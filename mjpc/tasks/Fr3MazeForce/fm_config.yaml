@@ -1,0 +1,61 @@
+# FlowMPPI + FMOnly planner config for FR3_MazeForce task.
+# Loaded via env: MJPC_FM_CONFIG=mjpc/tasks/Fr3MazeForce/fm_config.yaml.
+# Default (no env) falls back to mjpc/tasks/Fr3/fm_config.yaml.
+#
+# task.xml owns MPPI/sampling params; this file owns FM-side hyperparameters
+# + a few mjpc runtime flags. Env vars (MJPC_*) take precedence over YAML.
+
+# ============ mjpc runtime ============
+tasks_dir: mjpc/tasks
+autorun: true
+
+# planner       0=MPPI, 9=FlowMPPI, 10=FMOnly
+planner: 9
+horizon: 0.20
+trajectories: 32
+knots: 30
+
+# FlowMPPI cost mode only (spec: WTA disabled for narrow task).
+fm_mode: cost
+fm_step_indexed: true
+
+# FM_track residual scale (effective weight = task_weight * SCALE^2).
+# 0 disables. Sweep this to compare free-space prior strength vs gate cost.
+fm_track_scale: 1.0
+
+# ============ Guide model ============
+# guide_type:  "fm" (FM-DiT teacher) | "mlp" (distilled MLP student).
+# Env MJPC_GUIDE_TYPE overrides.
+guide_type: fm
+
+# FM teacher (guide_type=fm). Env MJPC_FM_CKPT / MJPC_FM_STATS override.
+fm_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/flow_policy.onnx
+fm_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_6dof_tcp/normalization_stats.npz
+fm_chunk_dt: 0.020
+fm_te_decay: 0.01
+fm_te_buffer: 10
+fm_ode_steps: 12
+
+# MLP student (guide_type=mlp). Env MJPC_MLP_CKPT / MJPC_MLP_STATS override.
+mlp_checkpoint:
+mlp_stats:
+
+# ============ Tracking enhancements ============
+lookahead: 0.24
+no_temporal_ensemble: false
+chunk_idx: 9
+vel_ff: true
+fm_chunk_advance: true
+
+# ============ PD control law (FMOnly + FlowMPPI warmstart) ============
+kp: 400.0
+kd: 40.0
+tau_max_big: 87.0
+tau_max_small: 12.0
+
+# ============ Force cost (narrow has no EE_Force sensor) ============
+# Kept for schema compatibility; values are ignored since task.xml omits
+# the EE_Force user sensor.
+force_mode: hinge
+f_max: 25.0
+force_scale: 1.0
