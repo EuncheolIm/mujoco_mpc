@@ -41,3 +41,7 @@ build_asan/
 out/
 sweep_*/
 auto_mlp_cost_run/
+# Large training checkpoints (>100MB single-file limit on GitHub).
+# Deploy uses ONNX (flow_policy.onnx + .data); .pth only needed for retraining.
+mjpc/checkpoints/flow_v26_6dof_tcp/best.pth
+mjpc/checkpoints/flow_v26_6dof_tcp/latest.pth
