@@ -1,0 +1,45 @@
+# FR3 reach experiment parameters 
+# override these per key: MJPC_FR3_WSCALE, MJPC_FR3_OBS, MJPC_FR3_SIGMA,
+# MJPC_FR3_TGT_XYZ, MJPC_FR3_TGT_QUAT, MJPC_FM_TRACK_SCALE, MJPC_LAMBDA,
+# MJPC_TRAJECTORIES. task.xml and fr3_obstacle.cc are never modified.
+
+# wscale: 1.0          # cost-weight scale (1.0 = task.xml original 1e6 weights)
+# sigma: 1.0            # sampling noise scale (sampling_exploration)
+# alpha: 5              # cost-residual proximal weight (-> MJPC_FM_TRACK_SCALE)
+# lambda: 1000             # MPPI softmax temperature (-> MJPC_LAMBDA)
+# trajectories: 64     # rollout budget K (-> MJPC_TRAJECTORIES)
+
+wscale: 0.05          # cost-weight scale (1.0 = task.xml original 1e6 weights)
+sigma: 1            # sampling noise scale (sampling_exploration)
+# in ID test: alpha 5, lambda 100, trajectories 64
+# in OOD test: alpha 1, lambda 100, trajectories 64 
+alpha: 1             # cost-residual proximal weight (-> MJPC_FM_TRACK_SCALE)
+lambda: 100             # MPPI softmax temperature (-> MJPC_LAMBDA)
+trajectories: 32     # rollout budget K (-> MJPC_TRAJECTORIES)
+
+
+# --- obstacle: OMIT/comment => task.xml "5 5 5" parked = free-space ID.
+#     Uncomment for OOD (obstacle active, avoidance required):
+# obstacle: 0.495 0.0 0.444
+obstacle: 0.435 0.090 0.404
+
+# --- obstacle size / avoidance (optional; task.xml defaults: radius 0.06, half_y 0.15,
+#     extra_margin 0.02, tip_thr 0.12). radius/half_y = physical cylinder;
+#     extra_margin/tip_thr = how far the planner's cost keeps the arm away
+#     (grow extra_margin to widen avoidance so warm-start can't stumble around):
+radius: 0.10          # cylinder radius (env MJPC_FR3_OBS_RADIUS) — 0.06→0.10: push the physical detour beyond wta's σ=8 sampling reach
+# half_y: 0.15          # cylinder half-length in y (env MJPC_OBS_HALF_Y)
+extra_margin: 0.03     # extra arm-vs-obstacle keep-out (env MJPC_OBS_EXTRA_MARGIN)
+tip_thr: 0.15         # EE-tip keep-out (env MJPC_OBS_TIP_THR)
+
+# --- per-term weight multiplier (applied on top of wscale):
+wmul_joint_vel_penalty: 20   # acts on the EXCESS above qdot_max only (hinge)
+qdot_max: 1.0               # joint-vel cap (rad/s). 0.6 was tried for calmer motion but lengthened graze contacts to 11-13 steps (crossing the collision threshold) and pushed none past the 30s cap -> revisit speed visually if needed
+wset_joint_limit: 500       # turn ON joint-limit cost (task.xml ships 0) — penalize wedged/flipped near-limit solutions
+
+# --- reach target (optional; task.xml default 0.409 -0.035 0.172 is used if omitted):
+target_xyz:  0.429 -0.06 0.162
+target_quat: -0.3365 0.6535 -0.5571 -0.3864
+
+# target_xyz: 0.5529 -0.0222 0.216
+# target_quat: -0.6312 0.7070 0.1596 0.2761

@@ -49,6 +49,9 @@ add_custom_target(
   /home/kkomji/tmp/flow-matching-robot-control/model/assets
   ${CMAKE_CURRENT_BINARY_DIR}/Fr3/assets
 
+  # G1 stand: model + assets are vendored under mjpc/tasks/g1/ (source tree),
+  # so copy_resources handles the source → build copy. No extra commands here.
+
   # ================ EC ============ #
 
   # acrobot

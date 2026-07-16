@@ -1,0 +1,162 @@
+<mujoco model="Fr3OodSim2Real">
+  <include file="../common.xml"/>
+
+  <!-- Pure-reach task: userdata is unused (no wipe/hybrid phases) but kept
+       reserved to avoid any planner-side indexing assumptions. -->
+  <size memory="1M" nuserdata="5"/>
+
+  <custom>
+    <numeric name="agent_planner" data="13" />
+    <!-- <numeric name="agent_horizon" data="0.30" />  
+    <numeric name="agent_timestep" data="0.01" /> -->
+
+    <!-- horizon/dt match reference tau-MPPI: T=40 steps, dt=0.01 -->
+    <!-- dt was changed from 0.003 to 0.01 caused by the change in agent_timestep and for safety -->
+    <!-- <numeric name="agent_horizon" data="0.30" /> -->
+    <!-- Paper FR3 OOD operating point: H=0.20 s. -->
+    <numeric name="agent_horizon" data="0.20" />
+    <numeric name="agent_timestep" data="0.01" />
+
+    <numeric name="agent_policy_width" data="0.0035" />
+    <!-- Paper FR3 OOD operating point: K=32 rollouts. -->
+    <numeric name="sampling_trajectories" data="32"/>
+    <!-- Dense per-step control: 40 zero-spline knots over the horizon. -->
+    <numeric name="sampling_spline_points" data="30" />
+    <!-- 0=Zero, 1=Linear, 2=Cubic, 3=Bezier. Position-actuator setup uses Cubic
+         (matches the proven Fr3ObstacleQ config). -->
+    <numeric name="sampling_representation" data="2" />
+    <!-- Global multiplier on per-joint sigma (reference uses raw sigma -> 1.0). -->
+    <numeric name="sampling_exploration" data="1.0" />
+    <!-- MPPI temperature: matches reference _lambda = 1.0. -->
+    <!-- Position-actuator temperature. Raw user-sensor weights are kept at the
+         Fr3ObstacleQ values; lambda=2000 reproduces that task's effective
+         softmax (weights x wscale=0.05 / lambda=100  ==  weights / 2000). -->
+    <numeric name="sampling_lambda" data="2000" />
+    <!-- DC noise (one offset per rollout-joint, broadcast to all knots). -->
+    <numeric name="sampling_dc_noise" data="1" />
+    <!-- Per-joint sigma in RAD (position-setpoint space), matches Fr3ObstacleQ.
+         The old torque-era "2 2 2 2 1 1 1" (N*m) is enormous as radians and
+         destabilizes position-actuator sampling. -->
+    <numeric name="sampling_std_per_joint" size="7" data="0.05 0.05 0.05 0.05 0.04 0.04 0.04" />
+    <numeric name="gradient_spline_points" data="6" />
+
+    <!-- FM-as-cost-bias target joint position (option E). Updated each
+         FlowMPPI planner step by UpdateFM(); CostFMTrack residual = qpos - this.
+         Default = HOME_Q (zero residual when FM is not loaded). -->
+    <numeric name="q_fm_target" size="7" data="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+  </custom>
+
+  <statistic extent="0.8" center="0.2 0 0.4"/>
+
+  <visual>
+    <quality shadowsize="8192"/>
+    <global azimuth="120" elevation="-20"/>
+    <scale framelength=".3" framewidth=".03"/>
+  </visual>
+
+  <default>
+    <geom solref=".001 1"/>
+  </default>
+
+  <asset>
+    <material class="fr3" name="white_trans" rgba="1 1 1 0.3"/>
+    <material class="fr3" name="off_white_trans" rgba="0.901961 0.921569 0.929412 0.3"/>
+    <material class="fr3" name="black_trans" rgba="0.25 0.25 0.25 0.3"/>
+  </asset>
+
+  <compiler texturedir="./textures"/>
+
+  <worldbody>
+    <site name="world"/>
+    <light pos="0 -0.1 0.5" dir="0 0.2 -1" diffuse="0.7 0.7 0.7" specular="0.3 0.3 0.3"
+        directional="true" castshadow="true"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
+
+    <!-- Pure-reach scene: table removed (no contact/force). -->
+
+    <!-- <body name="target" mocap="true" pos="0.6 0.4 0.05">
+      <geom name="target"  type="box" size="0.02 0.03 0.02" contype="0" conaffinity="0" rgba=".5 .5 .5 .3"/>
+      <site name="target1" type="box" pos="0  .026 0" size="0.021 0.005 0.021" rgba="1 .1 .1 .3"/>
+      <site name="target2" type="box" pos="0 -.026 0" size="0.021 0.005 0.021" rgba=".1 .1 1 .3"/>
+    </body> -->
+
+
+    <!-- <body name="box" pos="0.4 0.0 0.5" mocap="true">
+      <freejoint/>
+      <geom name="box"  type="box" size="0.02 0.03 0.02" priority="1" condim="6" friction="1 .01 .003"/>
+      <geom name="box"  type="box" size="0.02 0.03 0.02" contype="0" conaffinity="0" rgba=".5 .5 .5 .3"/>
+      <site name="box1" type="box" pos="0  .026 0" size="0.021 0.005 0.021" rgba="1 .1 .1 1"/>
+      <site name="box2" type="box" pos="0 -.026 0" size="0.021 0.005 0.021" rgba=".1 .1 1 1"/>
+    </body> -->
+
+    <!-- hand_copy mocap body now comes from fr3_yeshand.xml (was inline here
+         when using panda_modified.xml; that inline copy conflicts with the
+         fr3_yeshand-provided one). -->
+  </worldbody>
+
+  <contact>
+    <exclude body1="world" body2="left_finger"/>
+    <exclude body1="world" body2="right_finger"/>
+    <exclude body1="left_finger" body2="right_finger"/>
+  </contact>
+
+  <keyframe>
+    <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188 0.005 0.005"/>
+     -->
+     <!-- <key name="home" qpos="-0.026895 0.391451 0.0199961 0.959693 0 0 -0.281049 1.00714 0.42312 -0.00198696 -1.65569 -0.05794 2.28189 0.393188"/> -->
+     <!-- ctrl = home joint angles: position actuators hold the home pose at
+          reset, so the planner nominal seeds to "hold pose" instead of 0.
+          Without this, the initial ctrl=0 commands every joint to 0 rad and the
+          arm lurches upward (toward the straight-up config) before the plan
+          converges. -->
+     <key name="home" qpos="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"
+          ctrl="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+  </keyframe>
+
+  <sensor>
+  <!-- user format: "type, weight, weight_lower, weight_upper, p_smooth"
+       Final cost = weight * sum(residual^2). Weights below match reference
+       tau-MPPI: Q_p=1e6, Q_o=5e4, qdot=500, null=1000, plus a soft hinge that
+       approximates the reference's hard penalty on velocity / joint limits.
+  -->
+    <!-- Match reference MPPI_tau.cu raw quadratic costs.
+         mjpc kQuadratic (norm_type=0) is 0.5·‖x‖², so weight = 2·Q to
+         align with reference's   cost = Q·‖x‖²   and gradient = 2Q·x.
+           Reference Q       →   mjpc weight (= 2·Q)
+           Q_p   = 1e6              2e6     (Reach_pos)
+           Q_o   = 5e4              1e5     (Reach_ori)
+           null  = 1000             2000    (joint_cent)
+           qdot  = 500              1000    (joint_vel)
+           Force = 10               20      (EE_Force)
+         The 5th xml number is the Norm parameter; for kQuadratic it is
+         unused (kept at the previous values for compatibility). -->
+    <user name="Reach_pos"         dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Reach_ori"         dim="3" user="2 50000   0 500000   0.01"/>
+    <user name="joint_cent"        dim="7" user="2 20    0 5000     1"/>
+    <user name="joint_vel_penalty" dim="7" user="0 4000    0 50000    0.01"/>
+    <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
+
+    <!-- FM joint-target tracking (option E). Effective weight is
+         task_weight * MJPC_FM_TRACK_SCALE^2. MJPC_FM_TRACK_SCALE=0 disables.
+         Sweep SCALE for FM-bias intensity. -->
+    <user name="FM_track"          dim="7" user="0 10000   0 50000    0.01"/>
+
+    <framepos name="hand" objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient" objtype="site" objname="hand_site"/>
+
+    <framequat name="hand_target_orient" objtype="site" objname="hand_copy_site"/>
+    <framepos name="hand_target" objtype="site" objname="hand_copy_site"/>
+
+    <framepos name="trace0" objtype="site" objname="hand_site"/>
+
+    <!-- hand_force sensor now provided by fr3_yeshand.xml (renamed from
+         ee_force). Removed inline declaration to avoid duplicate. -->
+    <!-- <force name="hand_force" site="hand_site"/> -->
+  </sensor>
+
+  <!-- modified from: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda -->
+  <!-- Use fr3_yeshand model (matches FM training kinematics — no extra hand
+       body rotation that panda_modified.xml adds). -->
+  <include file="fr3_yeshand.xml"/>
+  <!-- <include file="panda_modified.xml"/> -->
+</mujoco>

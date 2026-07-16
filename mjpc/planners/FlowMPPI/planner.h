@@ -212,9 +212,11 @@ mjpc::spline::SplineInterpolation interpolation_ =
   std::uint8_t sliding_plan_ = false;
 
   int num_trajectory_;
+  // FM rollout count (= num_trajectory * fm_frac in wta, 0 in cost). Computed
+  // ONCE per OptimizePolicy before Rollouts so seeding + softmax use the SAME
+  // split (fixes FRAC=1 seeding only half from the FM prior).
+  int N_fm_ = 0;
   mutable std::shared_mutex mtx_;
-
-  double F_des[3] = {0.0, 0.0, 0.0}; // Desired End effector force
 
   // ===== Flow Matching warm-start state =====
   // Lazy-loaded from env vars MJPC_FM_CKPT, MJPC_FM_STATS. When loaded,

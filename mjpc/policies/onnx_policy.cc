@@ -326,14 +326,16 @@ void ONNXPolicy::loadNormalizationStats(const std::string& stats_path) {
 
     auto goal_mean_arr = npz["goal_mean"];
     auto goal_std_arr = npz["goal_std"];
-    goal_mean_.resize(6);
-    goal_std_.resize(6);
+    goal_dim_ = static_cast<int>(goal_mean_arr.shape[0]);  // 6 (pos+rpy) or 9 (pos+rot6d)
+    goal_mean_.resize(goal_dim_);
+    goal_std_.resize(goal_dim_);
     double* gm = goal_mean_arr.data<double>();
     double* gs = goal_std_arr.data<double>();
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < goal_dim_; i++) {
         goal_mean_[i] = static_cast<float>(gm[i]);
         goal_std_[i] = static_cast<float>(gs[i]);
     }
+    std::cout << "[ONNXPolicy] goal_dim=" << goal_dim_ << " (from stats)" << std::endl;
 
     auto action_mean_arr = npz["action_mean"];
     auto action_std_arr = npz["action_std"];
@@ -450,7 +452,7 @@ void ONNXPolicy::predictBC(const std::vector<float>& state_norm,
                             const std::vector<float>& goal_norm,
                             Eigen::VectorXd& action) {
     std::vector<int64_t> state_shape = {1, static_cast<int64_t>(state_dim_)};
-    std::vector<int64_t> goal_shape = {1, 6};
+    std::vector<int64_t> goal_shape = {1, goal_dim_};
 
     std::vector<float> state_data(state_norm);
     std::vector<float> goal_data(goal_norm);
@@ -492,7 +494,7 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
     std::vector<int64_t> state_shape = {1, static_cast<int64_t>(state_dim_)};
     std::vector<int64_t> prev_state_shape = {1, static_cast<int64_t>(state_dim_)};
     std::vector<int64_t> prev_action_shape = {1, static_cast<int64_t>(action_dim_)};
-    std::vector<int64_t> goal_shape = {1, 6};
+    std::vector<int64_t> goal_shape = {1, goal_dim_};
     std::vector<int64_t> x_t_shape = {1, static_cast<int64_t>(flat_dim)};
     std::vector<int64_t> t_shape = {1, 1};
 
@@ -518,7 +520,7 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
             inputs.push_back(Ort::Value::CreateTensor<float>(
                 memory_info_, prev_action_data.data(), action_dim_, prev_action_shape.data(), 2));
             inputs.push_back(Ort::Value::CreateTensor<float>(
-                memory_info_, goal_data.data(), 6, goal_shape.data(), 2));
+                memory_info_, goal_data.data(), goal_dim_, goal_shape.data(), 2));
             inputs.push_back(Ort::Value::CreateTensor<float>(
                 memory_info_, x_t_buffer_.data(), flat_dim, x_t_shape.data(), 2));
             inputs.push_back(Ort::Value::CreateTensor<float>(
@@ -528,7 +530,7 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
             inputs.push_back(Ort::Value::CreateTensor<float>(
                 memory_info_, state_data.data(), state_dim_, state_shape.data(), 2));
             inputs.push_back(Ort::Value::CreateTensor<float>(
-                memory_info_, goal_data.data(), 6, goal_shape.data(), 2));
+                memory_info_, goal_data.data(), goal_dim_, goal_shape.data(), 2));
             inputs.push_back(Ort::Value::CreateTensor<float>(
                 memory_info_, x_t_buffer_.data(), flat_dim, x_t_shape.data(), 2));
             inputs.push_back(Ort::Value::CreateTensor<float>(
@@ -631,7 +633,7 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
 
 void ONNXPolicy::predict(const float* state, const float* goal, float* action) {
     Eigen::VectorXd state_vec = Eigen::Map<const Eigen::VectorXf>(state, state_dim_).cast<double>();
-    Eigen::VectorXd goal_vec = Eigen::Map<const Eigen::VectorXf>(goal, 6).cast<double>();
+    Eigen::VectorXd goal_vec = Eigen::Map<const Eigen::VectorXf>(goal, goal_dim_).cast<double>();
     Eigen::VectorXd action_vec;
     predict(state_vec, goal_vec, action_vec);
     for (int i = 0; i < action_dim_; i++) {

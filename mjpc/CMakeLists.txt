@@ -68,6 +68,8 @@ add_library(
   tasks/manipulation/manipulation.h
   tasks/op3/stand.cc
   tasks/op3/stand.h
+  tasks/g1/stand.cc
+  tasks/g1/stand.h
   tasks/panda/panda.cc
   tasks/panda/panda.h
   tasks/particle/particle.cc
@@ -92,6 +94,18 @@ add_library(
   tasks/Fr3/cost_fn.h
   tasks/Fr3/dynamics.cc
   tasks/Fr3/dynamics.h
+  tasks/Fr3Reach/fr3.cc
+  tasks/Fr3Reach/fr3.h
+  tasks/Fr3Reach/cost_fn.cc
+  tasks/Fr3Reach/cost_fn.h
+  tasks/Fr3Reach/dynamics.cc
+  tasks/Fr3Reach/dynamics.h
+  tasks/Fr3OodSim2Real/fr3.cc
+  tasks/Fr3OodSim2Real/fr3.h
+  tasks/Fr3OodSim2Real/cost_fn.cc
+  tasks/Fr3OodSim2Real/cost_fn.h
+  tasks/Fr3OodSim2Real/dynamics.cc
+  tasks/Fr3OodSim2Real/dynamics.h
   tasks/Fr3MazeForce/fr3_maze_force.cc
   tasks/Fr3MazeForce/fr3_maze_force.h
   tasks/Fr3MazeForce/cost_fn.cc
@@ -100,6 +114,10 @@ add_library(
   tasks/Fr3Obstacle/fr3_obstacle.h
   tasks/Fr3Obstacle/cost_fn.cc
   tasks/Fr3Obstacle/cost_fn.h
+  tasks/Fr3ObstacleQ/fr3_obstacle.cc
+  tasks/Fr3ObstacleQ/fr3_obstacle.h
+  tasks/Fr3ObstacleQ/cost_fn.cc
+  tasks/Fr3ObstacleQ/cost_fn.h
 
   # MPPI
   planners/MPPI/planner.cc
@@ -107,6 +125,10 @@ add_library(
 
   planners/MPPI/policy.cc
   planners/MPPI/policy.h
+
+  # PriorMPPI (MPPI subclass: ACT-prior warm-start / cost-residual injection)
+  planners/PriorMPPI/planner.cc
+  planners/PriorMPPI/planner.h
 
   # FlowMPPI (MPPI with FM warm-start)
   planners/FlowMPPI/planner.cc
@@ -121,6 +143,14 @@ add_library(
 
   planners/FMOnly/policy.cc
   planners/FMOnly/policy.h
+
+  # RLMPPI (MPPI sampling + RL policy cost bias, G1 29-DoF)
+  planners/RLMPPI/planner.cc
+  planners/RLMPPI/planner.h
+
+  # RLOnly (pure RL policy as controller, no sampling)
+  planners/RLOnly/planner.cc
+  planners/RLOnly/planner.h
 
   # MPOPI
   planners/MPOPI/planner.cc
@@ -194,6 +224,8 @@ add_library(
   policies/mlp_policy.h
   policies/clik_policy.cc
   policies/clik_policy.h
+  policies/rl_policy.cc
+  policies/rl_policy.h
   simulate.cc
   simulate.h
   task.cc
@@ -329,6 +361,29 @@ target_link_libraries(
 )
 target_include_directories(testspeed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+# Headless FR3 closed-loop evaluator (q-vs-torque / mode comparison logging).
+add_executable(fr3_eval fr3_eval.cc)
+target_link_libraries(
+  fr3_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(fr3_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Deterministic, deployment-consistent (decimated-planning async) FR3 reach sweep,
+# mirroring g1sweep/go2sweep. Standalone; does not modify shared FR3 sources.
+add_executable(fr3sweep fr3sweep.cc)
+target_link_libraries(
+  fr3sweep
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(fr3sweep PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
 # FM policy smoke + closed-loop tests (only when ONNX Runtime is available).
 if(MJPC_HAS_ONNXRUNTIME)
   add_executable(fm_policy_test policies/fm_policy_test.cc)
@@ -351,6 +406,15 @@ target_include_directories(impedance_wipe_test PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 add_executable(spline_copy_test spline/spline_copy_test.cc)
 target_link_libraries(spline_copy_test libmjpc)
 target_include_directories(spline_copy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Headless G1 walking-config tester (closed-loop MPPI, no viewer, CSV out).
+add_executable(g1_walk_test tasks/g1/headless_walk_test.cc)
+target_link_libraries(g1_walk_test libmjpc mujoco::mujoco Threads::Threads)
+target_include_directories(g1_walk_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+add_executable(rlmppi_sweep tasks/g1/rlmppi_sweep.cc)
+target_link_libraries(rlmppi_sweep libmjpc mujoco::mujoco Threads::Threads)
+target_include_directories(rlmppi_sweep PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 target_compile_options(testspeed PUBLIC ${MJPC_COMPILE_OPTIONS})
 target_link_options(testspeed PRIVATE ${MJPC_LINK_OPTIONS})

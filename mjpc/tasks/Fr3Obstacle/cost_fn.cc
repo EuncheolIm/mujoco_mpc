@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
@@ -93,55 +94,93 @@ double SegmentDistSq(const double a[3], const double b[3],
 // tubes (line segments + radii); each tube's minimum distance to the
 // obstacle line segment is compared against (tube_radius + obstacle_radius +
 // margin). The sum of per-tube hinge violations is the residual. Mirrors
-// MPPI_tau.cu::CollisionCheck but with continuous hinge instead of binary
-// 30000-N cost so MPPI gradient picks up the avoidance signal smoothly.
+// Faithful port of MPPI_tau.cc::CollisionCheck (validated in sim + real).
+// Sparse step cost: +1 per tube-pair whose minimum segment distance is below
+// its hardcoded threshold. Counts BOTH self-collision (3 pairs, thr 0.22/0.22/
+// 0.23) and arm-vs-obstacle (3 pairs, thr 0.20/0.20/0.18). The user sensor's
+// kL2 norm (small p_smooth) makes total cost ~ weight * N (linear), matching
+// the reference's `cost_col += 30000` per violation. Tube map:
+//   reference link0/link2 -> fixed base-column points (FR3 base at origin),
+//   link3/4/5/7 -> fr3_link3/4/5/7 body xpos, linke7 -> site tube4_end.
 int CostObstacle(const mjModel* model, const mjData* data, double* residual) {
-  int oid = mj_name2id(model, mjOBJ_NUMERIC, "obstacle_xyz");
-  if (oid < 0) { residual[0] = 0.0; return 1; }
-  const double* o = model->numeric_data + model->numeric_adr[oid];
-  const double r_obs  = GetNumberOrDefault(0.06, model, "obstacle_radius");
-  const double margin = GetNumberOrDefault(0.02, model, "obstacle_margin");
-  // Sphere obstacle as a degenerate segment (point).
-  const double obs_a[3] = {o[0], o[1], o[2]};
-  const double obs_b[3] = {o[0], o[1], o[2]};
+  // Read the obstacle's LIVE position from its body xpos (it is a mocap body
+  // moved by TransitionLocked). In rollouts mocap_pos is frozen, so xpos is the
+  // current obstacle pose held over the horizon — correct for reactive
+  // avoidance. Falls back to the static numeric if the body is absent.
+  int ob = mj_name2id(model, mjOBJ_BODY, "obstacle");
+  double o[3];
+  if (ob >= 0) {
+    o[0] = data->xpos[3 * ob + 0];
+    o[1] = data->xpos[3 * ob + 1];
+    o[2] = data->xpos[3 * ob + 2];
+  } else {
+    int oid = mj_name2id(model, mjOBJ_NUMERIC, "obstacle_xyz");
+    if (oid < 0) { residual[0] = 0.0; return 1; }
+    const double* on = model->numeric_data + model->numeric_adr[oid];
+    o[0] = on[0]; o[1] = on[1]; o[2] = on[2];
+  }
+  // DEBUG (MJPC_DBG_OBS=1): print the obstacle position this cost sees, to
+  // verify rollouts receive the live (moving) mocap obstacle, not the parked
+  // model default. Prints the first ~24 evaluations then stops.
+  if (std::getenv("MJPC_DBG_OBS") && o[2] < 1.0) {  // only once sweep is active
+    static int dbg_cnt = 0;
+    if (dbg_cnt < 30) {
+      std::fprintf(stderr, "[CostObs] t=%.3f obs=(%.3f, %.3f, %.3f)\n",
+                   data->time, o[0], o[1], o[2]);
+      dbg_cnt++;
+    }
+  }
+  // Sphere obstacle as a degenerate segment (point). The reference supports a
+  // segment obstacle (obj_pos1, obj_pos2); a sphere uses a single point.
+  const double obj_a[3] = {o[0], o[1], o[2]};
+  const double obj_b[3] = {o[0], o[1], o[2]};
 
-  const int b1 = mj_name2id(model, mjOBJ_BODY, "fr3_link1");
+  // Fixed base-column points, matching the reference's hardcoded link0/link2
+  // (FR3 base is at the world origin, so these world coords are valid).
+  const double link0[3] = {0.0, 0.0, 0.375};
+  const double link2[3] = {0.0, 0.0, 0.708};
+
   const int b3 = mj_name2id(model, mjOBJ_BODY, "fr3_link3");
   const int b4 = mj_name2id(model, mjOBJ_BODY, "fr3_link4");
   const int b5 = mj_name2id(model, mjOBJ_BODY, "fr3_link5");
   const int b7 = mj_name2id(model, mjOBJ_BODY, "fr3_link7");
-  const int s4 = mj_name2id(model, mjOBJ_SITE, "tube4_end");
-  if (b1 < 0 || b3 < 0 || b4 < 0 || b5 < 0 || b7 < 0 || s4 < 0) {
+  // Tube 4 = link7 -> tube4_end (wrist/flange), the reference's link7e extent.
+  // The thin fingertip beyond it gets a SEPARATE small keep-out below, instead
+  // of stretching this tube to the tip (which would inflate the whole 0.18
+  // swept capsule and over-avoid).
+  const int se7 = mj_name2id(model, mjOBJ_SITE, "tube4_end");
+  const int tip = mj_name2id(model, mjOBJ_SITE, "hand_site");  // reach tip (+0.214)
+  if (b3 < 0 || b4 < 0 || b5 < 0 || b7 < 0 || se7 < 0 || tip < 0) {
     residual[0] = 0.0;
     return 1;
   }
-  const double* p1 = data->xpos      + 3 * b1;
-  const double* p3 = data->xpos      + 3 * b3;
-  const double* p4 = data->xpos      + 3 * b4;
-  const double* p5 = data->xpos      + 3 * b5;
-  const double* p7 = data->xpos      + 3 * b7;
-  const double* p4end = data->site_xpos + 3 * s4;
+  const double* link3  = data->xpos      + 3 * b3;
+  const double* link4  = data->xpos      + 3 * b4;
+  const double* link5  = data->xpos      + 3 * b5;
+  const double* link7  = data->xpos      + 3 * b7;
+  const double* linke7 = data->site_xpos + 3 * se7;
+  const double* tip_p  = data->site_xpos + 3 * tip;
 
-  struct Tube { const double* a; const double* b; double radius; };
-  const Tube tubes[4] = {
-    {p1, p3, 0.07},     // shoulder -> upper arm trunk
-    {p3, p4, 0.06},     // upper arm -> elbow
-    {p4, p5, 0.06},     // forearm
-    {p7, p4end, 0.12},  // wrist + hand (matches ModifyScene visualization)
-  };
+  double n = 0.0;
 
-  // Sparse cost (MPPI_tau.cu style): count how many tubes are inside the
-  // safety zone. residual = integer N ∈ [0, 4]; framework squares so
-  // cost = weight * N^2. Continuous hinge gradient is removed — MPPI
-  // relies on noise sampling to cross the boundary.
-  double n_collisions = 0.0;
-  for (const Tube& T : tubes) {
-    const double d2  = SegmentDistSq(T.a, T.b, obs_a, obs_b);
-    const double d   = std::sqrt(d2);
-    const double thr = T.radius + r_obs + margin;
-    if (d < thr) n_collisions += 1.0;
-  }
-  residual[0] = n_collisions;
+  // ---- Self-collision (reference thresholds 0.22 / 0.22 / 0.23) ----------
+  if (std::sqrt(SegmentDistSq(link0, link2, link4, link5))  < 0.22) n += 1.0;
+  if (std::sqrt(SegmentDistSq(link0, link2, link7, linke7)) < 0.22) n += 1.0;
+  if (std::sqrt(SegmentDistSq(link2, link3, link7, linke7)) < 0.23) n += 1.0;
+
+  // ---- Arm vs obstacle (reference thresholds 0.20 / 0.20 / 0.18) ---------
+  if (std::sqrt(SegmentDistSq(link2, link3, obj_a, obj_b))  < 0.20) n += 1.0;
+  if (std::sqrt(SegmentDistSq(link4, link5, obj_a, obj_b))  < 0.20) n += 1.0;
+  if (std::sqrt(SegmentDistSq(link7, linke7, obj_a, obj_b)) < 0.18) n += 1.0;
+
+  // ---- EE tip vs obstacle: thin fingertip gets its own small keep-out
+  // (obstacle radius + tip half-width + margin). Closes the tip blind spot
+  // WITHOUT inflating the wrist tube's 0.18 swept volume. Tune via the
+  // numeric "obstacle_tip_thr" (edit task.xml + reload model, no rebuild). ----
+  const double tip_thr = GetNumberOrDefault(0.12, model, "obstacle_tip_thr");
+  if (std::sqrt(SegmentDistSq(tip_p, tip_p, obj_a, obj_b)) < tip_thr) n += 1.0;
+
+  residual[0] = n;
   return 1;
 }
 

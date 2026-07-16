@@ -149,6 +149,7 @@ class MPPIPlanner : public RankedPlanner {
   // (units of N*m for torque control), globally scaled by sampling_exploration.
   // If the numeric is absent, falls back to the ctrlrange-scaled formulation.
   std::vector<double> noise_std_per_joint_;
+  double sigma_scale_ = 1.0;  // MJPC_SIGMA_SCALE: multiplies sampling std (sigma sweep)
 
   // If true, sample one DC offset per (rollout, joint) and broadcast it to
   // every knot of that rollout. This matches the reference tau-MPPI which
@@ -183,7 +184,20 @@ mjpc::spline::SplineInterpolation interpolation_ =
   int num_trajectory_;
   mutable std::shared_mutex mtx_;
 
-  double F_des[3] = {0.0, 0.0, 0.0}; // Desired End effector force
+  // ----- DIAL-MPC-style diffusion (opt-in via task.xml numerics) ---------
+  //   sampling_n_diffuse           : inner iterations per planning step (>=1)
+  //   sampling_n_diffuse_init      : iterations on the very first plan call
+  //   sampling_traj_diffuse_factor : geometric σ decay per iter (DIAL-MPC
+  //                                  paper notation; default 1.0 = no decay).
+  //                                  σ(i) = saved_exploration · factor^i.
+  // Each iteration reuses OptimizePolicyCandidates so the existing rollout
+  // / weight / update pipeline is unchanged; only the global noise scale
+  // (noise_exploration[0]) is annealed between calls. Defaults (1,1,1)
+  // collapse the loop to a single iteration → behaviour identical to stock MPPI.
+  int    n_diffuse_              = 1;
+  int    n_diffuse_init_         = 1;
+  double traj_diffuse_factor_    = 1.0;
+  bool   first_plan_             = true;
 };
 
 }  // namespace mjpc

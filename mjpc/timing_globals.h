@@ -44,6 +44,16 @@ inline std::atomic<double> g_qfm_chunk_dt{0.020};       // chunk step duration (
 inline std::atomic<double> g_qfm_chunk_t0{-1.0};        // sim time when chunk[0] was received
 inline std::atomic<double> g_qfm_chunk[kQfmChunkMaxH * 7];
 
+// ---- RL-MPPI target broadcast (G1 29-DoF) ------------------------------
+// Filled by RLMPPIPlanner::OptimizePolicy each plan iter:
+//   g_qrl_target[i] = qpos0[7+i] + 0.25 * rl_action[i]
+// Read by g1/stand.cc Residual() to build the "RL Track" cost residual.
+// g_qrl_valid stays false until the first successful RL forward; Residual
+// gates the residual to zero in that window to avoid a spurious bias pull.
+constexpr int kQrlDim = 29;
+inline std::atomic<double> g_qrl_target[kQrlDim];
+inline std::atomic<bool>   g_qrl_valid{false};
+
 }  // namespace mjpc
 
 #endif  // MJPC_TIMING_GLOBALS_H_

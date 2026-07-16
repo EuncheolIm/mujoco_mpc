@@ -56,6 +56,7 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
 
   // sampling noise std
   noise_exploration[0] = GetNumberOrDefault(0.1, model, "sampling_exploration");
+  if (const char* sc = std::getenv("MJPC_SIGMA_SCALE")) sigma_scale_ = std::atof(sc);  // sigma sweep
 
   // optional second std (defaults to 0)
   int se_id = mj_name2id(model, mjOBJ_NUMERIC, "sampling_exploration");
@@ -65,14 +66,17 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
   }
 
   // set number of trajectories to rollout. MJPC_TRAJECTORIES env var
-  // overrides task.xml for FlowMPPI-vs-MPPI sweep experiments.
+  // overrides task.xml for FlowMPPI-vs-MPPI sweep experiments. G1 Stand
+  // bypasses the override so it keeps K=128 from its task.xml.
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
-  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
-    int v = std::atoi(e);
-    if (v > 0) {
-      num_trajectory_ = v;
-      std::fprintf(stderr,
-                   "[MPPI] MJPC_TRAJECTORIES override: N=%d\n", v);
+  if (task.Name() != "G1 Stand") {
+    if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+      int v = std::atoi(e);
+      if (v > 0) {
+        num_trajectory_ = v;
+        std::fprintf(stderr,
+                     "[MPPI] MJPC_TRAJECTORIES override: N=%d\n", v);
+      }
     }
   }
 
@@ -108,6 +112,20 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
     noise_std_per_joint_.assign(model->numeric_data + sj_adr,
                                 model->numeric_data + sj_adr + sj_size);
   }
+
+  // DIAL-MPC-style diffusion knobs (default = 1 → vanilla MPPI behaviour).
+  // traj_diffuse_factor matches DIAL-MPC's per-iter geometric σ decay:
+  //   σ(i) = saved_exploration × traj_diffuse_factor^i.
+  // DIAL-MPC default is 0.5; set to 1.0 here so untouched tasks stay stock-MPPI.
+  n_diffuse_      = std::max(1, static_cast<int>(
+      GetNumberOrDefault(1.0, model, "sampling_n_diffuse")));
+  n_diffuse_init_ = std::max(1, static_cast<int>(
+      GetNumberOrDefault(static_cast<double>(n_diffuse_),
+                         model, "sampling_n_diffuse_init")));
+  traj_diffuse_factor_ =
+      GetNumberOrDefault(1.0, model, "sampling_traj_diffuse_factor");
+  if (traj_diffuse_factor_ <= 0.0) traj_diffuse_factor_ = 1e-6;
+  first_plan_ = true;
 
   winner = 0;
 }
@@ -185,6 +203,9 @@ void MPPIPlanner::Reset(int horizon,
 
   // winner
   winner = 0;
+
+  // DIAL-MPC: re-enter warm-up (n_diffuse_init_) on reset.
+  first_plan_ = true;
 }
 
 // set state
@@ -303,14 +324,29 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
 
 // optimize nominal policy using random sampling
 void MPPIPlanner::OptimizePolicy(int horizon, ThreadPool& pool) {
-
-
   {
     const std::unique_lock<std::shared_mutex> lock(mtx_);
     previous_policy = policy;
   }
 
-  OptimizePolicyCandidates(1, horizon, pool);
+  // ----- DIAL-MPC diffusion loop ---------------------------------------
+  // σ(i) = saved_exploration × traj_diffuse_factor^i  (DIAL-MPC paper Eq.
+  // applied per-iter; reference dial_mpc/core/dial_core.py
+  //   `traj_diffuse_factors = sigma_control * traj_diffuse_factor ** arange`).
+  // First plan call uses n_diffuse_init_ iterations as a warm-up; subsequent
+  // calls use n_diffuse_. Defaults (1,1,1.0) reduce this to a single
+  // stock-MPPI iteration → no behaviour change for non-DIAL tasks.
+  const int N = first_plan_ ? n_diffuse_init_ : n_diffuse_;
+  const double saved_exploration = noise_exploration[0];
+
+  for (int i = 0; i < N; ++i) {
+    const double scale = std::pow(traj_diffuse_factor_, i);
+    noise_exploration[0] = saved_exploration * scale;
+    OptimizePolicyCandidates(1, horizon, pool);
+  }
+
+  noise_exploration[0] = saved_exploration;
+  first_plan_ = false;
 
   // ----- update policy ----- //
   // start timer
@@ -472,6 +508,7 @@ void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
   if (noise_exploration[1] > 0 && absl::Bernoulli(gen_, kStd2Proportion)) {
     std = noise_exploration[1];
   }
+  std *= sigma_scale_;  // MJPC_SIGMA_SCALE (sigma sweep)
 
   // Per-joint sigma_k. Either from <sampling_std_per_joint> directly (matches
   // reference tau-MPPI), or fallback to 0.5 * ctrlrange_width.
@@ -617,13 +654,6 @@ void MPPIPlanner::GUI(mjUI& ui) {
       {mjITEM_SLIDERNUM, "Noise Std2", 2, noise_exploration+1, "0 1"},
       {mjITEM_CHECKBYTE, "Sliding plan", 2, &sliding_plan_, ""},
 
-      // =============== EC =============== //
-      // Fx desired
-      {mjITEM_SLIDERNUM, "F_des_x", 2, &F_des[0], "-10 10"},
-      {mjITEM_SLIDERNUM, "F_des_y", 2, &F_des[1], "-10 10"},
-      {mjITEM_SLIDERNUM, "F_des_z", 2, &F_des[2], "-10 10"},
-      // ================================== //
-
       {mjITEM_END}};
 
   // set number of trajectory slider limits
@@ -684,19 +714,6 @@ void MPPIPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
   mju::strcpy_arr(fig_timer->linename[0 + timer_shift], "Noise");
   mju::strcpy_arr(fig_timer->linename[1 + timer_shift], "Rollout");
   mju::strcpy_arr(fig_timer->linename[2 + timer_shift], "Policy Update");
-
-  // =============== EC =============== //
-  if (this->model) {
-    int num_id = mj_name2id(this->model, mjOBJ_NUMERIC, "F_des");
-    if (num_id >= 0) {
-      double* ptr =
-          this->model->numeric_data + this->model->numeric_adr[num_id];
-      ptr[0] = F_des[0];
-      ptr[1] = F_des[1];
-      ptr[2] = F_des[2];
-    }
-  }
-  // ================================== //
 
   // planner shift
   shift[0] += 1;

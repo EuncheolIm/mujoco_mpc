@@ -45,3 +45,10 @@ auto_mlp_cost_run/
 # Deploy uses ONNX (flow_policy.onnx + .data); .pth only needed for retraining.
 mjpc/checkpoints/flow_v26_6dof_tcp/best.pth
 mjpc/checkpoints/flow_v26_6dof_tcp/latest.pth
+
+# --- session: exclude bulky artifacts / paper / large raw checkpoints ---
+overleaf/
+results/
+videos/
+*.pth
+mjpc/checkpoints/**/*.pth

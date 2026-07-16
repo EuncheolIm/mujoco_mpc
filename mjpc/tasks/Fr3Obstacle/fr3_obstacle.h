@@ -47,8 +47,11 @@ class FR3Obstacle : public Task {
   ResidualFn residual_;
   bool traj_init_ = false;
   double traj_t0_ = 0.0;
-  double traj_start_mocap_[3] = {0, 0, 0};
   double traj_final_mocap_[3] = {0, 0, 0};
+  // Dynamic obstacle: parked out of the workspace until the EE first reaches
+  // the target (or a timeout), then it sweeps in y past the EE.
+  bool obs_active_ = false;
+  double obs_t0_ = 0.0;
 };
 }  // namespace mjpc
 

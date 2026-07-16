@@ -1,0 +1,109 @@
+# FlowMPPI + FMOnly planner config for FR3_Narrow task.
+# Loaded via env: MJPC_FM_CONFIG=mjpc/tasks/Fr3Narrow/fm_config.yaml.
+# Default (no env) falls back to mjpc/tasks/Fr3/fm_config.yaml.
+#
+# task.xml owns MPPI/sampling params; this file owns FM-side hyperparameters
+# + a few mjpc runtime flags. Env vars (MJPC_*) take precedence over YAML.
+
+# command 
+# env 설정 무조건 먼저 해야 이 config가 적용됨!
+# MJPC_PLANNER=9 MJPC_FM_CONFIG=$(pwd)/mjpc/tasks/Fr3ObstacleQ/fm_config.yaml   ./build/bin/mjpc --task=FR3_Obstacle_Q
+
+# cd Euncheol/mujoco_mpc ./build/bin/mjpc --task=FR3_Obstacle_Q
+
+# ============ mjpc runtime ============
+tasks_dir: mjpc/tasks
+autorun: false
+
+# planner       0=MPPI, 9=FlowMPPI, 10=FMOnly
+planner: 9
+horizon: 0.2
+# trajectories/lambda 제거: 이 파일의 env 발행(setenv_if_unset)이 fr3_experiment.yaml의
+# pubenv보다 먼저 실행돼 K=32/lambda=1000으로 조용히 고정하고, fr3_experiment.yaml
+# 편집을 죽은 키로 만들었음. K/λ는 fr3_experiment.yaml(trajectories:/lambda:)이
+# 단일 소스. (env MJPC_TRAJECTORIES/MJPC_LAMBDA를 직접 주면 그게 최우선.)
+# trajectories: 32
+knots: 30
+# MPPI softmax temperature (weights=exp(-(return-min)/lambda)). quadratic cost엔
+# 낮게(~10), kL2(선형)엔 높게(~1000). env MJPC_LAMBDA > yaml > task.xml numeric.
+# lambda: 1000
+
+fm_step_indexed: true
+
+# ==================================================================
+#  PRIOR INJECTION MODE  —  주석 해제는 딱 한 블록만! (나머지는 주석)
+#    fm_track_scale : cost_residual의 scale. FM_track norm=0(quadratic)이므로
+#      cost = 0.5 * task_w * SCALE^2 * ||q - q_fm||^2  → 논문 alpha = 0.5*task_w*SCALE^2
+#    fm_frac        : wta에서 prior 주변 샘플 rollout 비율 (cost에선 무시됨)
+# ==================================================================
+
+# ---- (A) cost_residual : FM을 cost로만 주입, 샘플링은 self-correcting ----
+fm_mode: cost
+# fm_track_scale 제거: alpha는 fr3_experiment.yaml(alpha:)이 단일 소스 (같은
+# 발행-선점 문제로 yaml alpha를 1.5로 덮어쓰고 있었음). wta에선 코드가 0 강제.
+# fm_track_scale: 1.5
+fm_frac: 0.0            # (cost에선 무시)
+
+# ---- (B) wta1 : 순수 warm-start, 전체 rollout을 FM prior 주변에서 샘플 ----
+# fm_mode: wta
+# fm_track_scale: 0.0       # wta에선 0 (안 그러면 warmstart+cost 하이브리드)
+# fm_frac: 1.0              # 1.0=wta1(순수), 0.5=wta3(half)
+# ==================================================================
+
+# ============ Obstacle collision keep-out (CostObstacle, meters) ============
+# yaml가 task.xml numeric을 override (env MJPC_OBS_* > yaml > xml numeric).
+#   obstacle_tip_thr      : EE-tip(hand_site) keep-out 반경.
+#   obstacle_extra_margin : 모든 arm-vs-obstacle keep-out에 더해지는 여유(팔 전체 확대).
+# 나머지 per-tube 기저값(0.20/0.18, self 0.22/0.23)은 cost_fn.cc 하드코딩.
+# keep-out도 fr3_experiment.yaml(extra_margin:/tip_thr:)이 단일 소스 (여기 값이
+# env로 선발행돼 yaml extra_margin 0.01을 0.02로 덮어쓰고 있었음). 미지정 시
+# task 기본값: tip_thr 0.12, extra_margin 0.02(cost_fn.cc).
+# obstacle_tip_thr:      0.15
+# obstacle_extra_margin: 0.02
+
+# ============ Guide model ============
+# guide_type:  "fm" (FM-DiT teacher) | "mlp" (distilled MLP student)
+#             | "clik" (analytic DLS Closed-Loop IK, no learned prior).
+# Env MJPC_GUIDE_TYPE overrides.
+guide_type: fm
+
+# FM teacher (guide_type=fm). Env MJPC_FM_CKPT / MJPC_FM_STATS override.
+fm_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_rot6d/flow_policy.onnx
+fm_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/flow_v26_rot6d/normalization_stats.npz
+fm_chunk_dt: 0.020
+fm_te_decay: 0.01
+fm_te_buffer: 10
+fm_ode_steps: 12
+
+# MLP student (guide_type=mlp). Env MJPC_MLP_CKPT / MJPC_MLP_STATS override.
+mlp_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/student_mlp_v26/student.onnx
+mlp_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/student_mlp_v26/normalization_stats.npz
+
+# CLIK analytic guide (guide_type=clik). Defaults match
+# data_collection/collect_ik_data_v3.py --step_target. Env vars
+# MJPC_CLIK_KP_POS / MJPC_CLIK_KP_ORI / MJPC_CLIK_DAMP / MJPC_CLIK_HORIZON
+# override.
+clik_kp_pos:  10.0
+clik_kp_ori:  10.0
+clik_damp:    0.01
+clik_horizon: 10
+
+# ============ Tracking enhancements ============
+lookahead: 0.24
+no_temporal_ensemble: false
+chunk_idx: 9
+vel_ff: true
+fm_chunk_advance: true
+
+# ============ PD control law (FMOnly + FlowMPPI warmstart) ============
+kp: 400.0
+kd: 40.0
+tau_max_big: 87.0
+tau_max_small: 12.0
+
+# ============ Force cost (narrow has no EE_Force sensor) ============
+# Kept for schema compatibility; values are ignored since task.xml omits
+# the EE_Force user sensor.
+force_mode: hinge
+f_max: 25.0
+force_scale: 1.0

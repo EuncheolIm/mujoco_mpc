@@ -86,11 +86,13 @@ void FMOnlyPlanner::Initialize(mjModel* model, const Task& task) {
 
   // set number of trajectories to rollout
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
-  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
-    int v = std::atoi(e);
-    if (v > 0) {
-      num_trajectory_ = v;
-      std::fprintf(stderr, "[FMOnly] MJPC_TRAJECTORIES override: N=%d\n", v);
+  if (task.Name() != "G1 Stand") {
+    if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+      int v = std::atoi(e);
+      if (v > 0) {
+        num_trajectory_ = v;
+        std::fprintf(stderr, "[FMOnly] MJPC_TRAJECTORIES override: N=%d\n", v);
+      }
     }
   }
 
@@ -311,6 +313,20 @@ void FMOnlyPlanner::ActionFromPolicy(double* action, const double* state,
     // qdot_d stays at zeros (no vel_ff) — set above.
   }
 
+  // POSITION actuators (bias = affine, ctrl = q_desired): the actuator runs the
+  // PD internally (kp/kv matched to fmc.kp/kd), so output the FM joint target
+  // q_d DIRECTLY. Writing a torque here would be misread as q_desired (the bug
+  // that made FMOnly diverge to ~168° on the position-actuator FR3 task, while
+  // the reference eval — a MOTOR model + M-projected PD τ — reaches ~1°). Motor
+  // (torque) tasks have bias=NONE and fall through to the τ path below. Mirrors
+  // FlowMPPI::ApplyWarmstart's q-space branch (detected via mjBIAS_AFFINE).
+  if (model->actuator_biastype &&
+      model->actuator_biastype[0] == mjBIAS_AFFINE) {
+    for (int i = 0; i < 7 && i < model->nu; ++i) action[i] = q_d(i);
+    for (int i = 7; i < model->nu; ++i) action[i] = 0.0;
+    return;
+  }
+
   // Populate act_data_ with current sim state for qfrc_bias.
   const int nq = model->nq;
   const int nv = model->nv;
@@ -329,6 +345,22 @@ void FMOnlyPlanner::ActionFromPolicy(double* action, const double* state,
   mj_fullM(model, M_full.data(), act_data_->qM);
   mj_rne(model, act_data_, /*flg_acc=*/0, act_data_->qfrc_bias);
 
+  // If the model uses MuJoCo gravity compensation (body gravcomp != 0), MuJoCo
+  // already applies qfrc_gravcomp = g(q) every step, so adding the full qfrc_bias
+  // (= Coriolis + g) below would double-compensate gravity (the arm floats up).
+  // Subtract the gravity part — recomputed with qvel = 0 — leaving Coriolis only,
+  // so the net applied torque still yields clean PD tracking (qddot = Kp e + Kd ė).
+  bool gravcomp_on = false;
+  for (int b = 0; b < model->nbody; ++b)
+    if (model->body_gravcomp[b] != 0.0) { gravcomp_on = true; break; }
+  std::vector<double> grav_only(nv, 0.0);
+  if (gravcomp_on) {
+    std::vector<double> qvel_save(act_data_->qvel, act_data_->qvel + nv);
+    for (int j = 0; j < nv; ++j) act_data_->qvel[j] = 0.0;
+    mj_rne(model, act_data_, /*flg_acc=*/0, grav_only.data());
+    for (int j = 0; j < nv; ++j) act_data_->qvel[j] = qvel_save[j];
+  }
+
   const double kKp = fmc.kp;
   const double kKd = fmc.kd;
   const double tau_lim[7] = {fmc.tau_max_big,   fmc.tau_max_big,
@@ -343,7 +375,7 @@ void FMOnlyPlanner::ActionFromPolicy(double* action, const double* state,
   for (int i = 0; i < 7; ++i) {
     double s = 0.0;
     for (int j = 0; j < 7; ++j) s += M_full[i * nv + j] * a[j];
-    double tau = s + act_data_->qfrc_bias[i];
+    double tau = s + act_data_->qfrc_bias[i] - grav_only[i];
     action[i] = std::max(-tau_lim[i], std::min(tau_lim[i], tau));
   }
   for (int i = 7; i < model->nu; ++i) action[i] = 0.0;
@@ -621,13 +653,6 @@ void FMOnlyPlanner::GUI(mjUI& ui) {
       {mjITEM_SLIDERNUM, "Noise Std2", 2, noise_exploration+1, "0 1"},
       {mjITEM_CHECKBYTE, "Sliding plan", 2, &sliding_plan_, ""},
 
-      // =============== EC =============== //
-      // Fx desired
-      {mjITEM_SLIDERNUM, "F_des_x", 2, &F_des[0], "-10 10"},
-      {mjITEM_SLIDERNUM, "F_des_y", 2, &F_des[1], "-10 10"},
-      {mjITEM_SLIDERNUM, "F_des_z", 2, &F_des[2], "-10 10"},
-      // ================================== //
-
       {mjITEM_END}};
 
   // set number of trajectory slider limits
@@ -688,19 +713,6 @@ void FMOnlyPlanner::Plots(mjvFigure* fig_planner, mjvFigure* fig_timer,
   mju::strcpy_arr(fig_timer->linename[0 + timer_shift], "Noise");
   mju::strcpy_arr(fig_timer->linename[1 + timer_shift], "Rollout");
   mju::strcpy_arr(fig_timer->linename[2 + timer_shift], "Policy Update");
-
-  // =============== EC =============== //
-  if (this->model) {
-    int num_id = mj_name2id(this->model, mjOBJ_NUMERIC, "F_des");
-    if (num_id >= 0) {
-      double* ptr =
-          this->model->numeric_data + this->model->numeric_adr[num_id];
-      ptr[0] = F_des[0];
-      ptr[1] = F_des[1];
-      ptr[2] = F_des[2];
-    }
-  }
-  // ================================== //
 
   // planner shift
   shift[0] += 1;
@@ -819,22 +831,18 @@ void FMOnlyPlanner::UpdateFM() {
     }
   }
 
-  // Goal: extract pos + rpy from target_site (mocap-driven), matching
-  // fm_closed_loop_test + eval_mocap_follow_v24. Apply roll wrap so the
-  // "EE down" pose maps to roll = -π (FM training mean) instead of +π.
-  Eigen::VectorXd goal = Eigen::VectorXd::Zero(6);
+  // Goal: pos + rot6d from target_site (mocap-driven). rot6d = first two COLUMNS
+  // of the target rotation matrix (site_xmat, row-major 3x3), matching
+  // target_to_goal_9d in the v26-rot6d FM training code. rot6d is continuous, so
+  // no RPY atan2/roll-wrap is needed (the old 6D=pos+rpy path is replaced).
+  Eigen::VectorXd goal = Eigen::VectorXd::Zero(9);
   if (target_site_id_ >= 0) {
     for (int i = 0; i < 3; ++i) {
       goal(i) = ws_data_->site_xpos[3 * target_site_id_ + i];
     }
     const double* R = ws_data_->site_xmat + 9 * target_site_id_;
-    const double sy = std::sqrt(R[0] * R[0] + R[3] * R[3]);
-    if (sy > 1e-6) {
-      goal(3) = std::atan2(R[7], R[8]);
-      goal(4) = std::atan2(-R[6], sy);
-      goal(5) = std::atan2(R[3], R[0]);
-    }
-    if (goal(3) > 0.0) goal(3) -= 2.0 * M_PI;
+    goal(3) = R[0]; goal(4) = R[3]; goal(5) = R[6];  // R[:,0]
+    goal(6) = R[1]; goal(7) = R[4]; goal(8) = R[7];  // R[:,1]
   }
 
   // Lookahead from fm_config.yaml (eval_circle_v24-style).

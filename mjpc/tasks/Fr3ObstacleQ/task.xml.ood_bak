@@ -1,0 +1,163 @@
+<mujoco model="Fr3ObstacleQ">
+  <include file="../common.xml"/>
+
+  <size memory="1M" nuserdata="1"/>
+
+  <custom>
+    <!-- Default = MPPI baseline. Switch to 9 (FlowMPPI) via env / yaml. -->
+    <numeric name="agent_planner" data="0"/>
+    <numeric name="agent_horizon" data="0.20"/>
+    <numeric name="agent_timestep" data="0.01"/>
+
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="128"/>
+    <numeric name="sampling_spline_points" data="10"/>
+    <numeric name="sampling_representation" data="2"/>
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>
+    <numeric name="sampling_dc_noise" data="1"/>
+    <!-- q-SPACE sampling std (radians), since ctrl = q_desired here (NOT N·m).
+         Key tunable for the q-vs-torque coverage comparison. -->
+    <numeric name="sampling_std_per_joint" size="7" data="0.05 0.05 0.05 0.05 0.04 0.04 0.04"/>
+    <numeric name="gradient_spline_points" data="6"/>
+
+    <!-- Reach target (world frame EE goal). -->
+    <numeric name="reach_target_xyz" size="3" data="0.4090 -0.0351 0.1724"/>
+    <!-- REACHABLE EE orientation at the target (from IK). Used as the target
+         mocap_quat so the orientation cost isn't fighting an infeasible pose. -->
+    <numeric name="reach_target_quat" size="4" data="-0.3365 0.6535 -0.5571 -0.3864"/>
+
+    <!-- Single sphere obstacle. FM prior knows nothing about it; the
+         Obstacle cost is the only signal that drives avoidance.
+         Safety: keep |ee - obstacle_xyz| > obstacle_radius + obstacle_margin. -->
+    <!-- TEMP: obstacle parked at z=5 (out of workspace) to isolate warm-start
+         instability from obstacle. REVERT to data="0.46 0.00 0.34". -->
+    <numeric name="obstacle_xyz"    size="3" data="0.495 0.0 0.444"/>
+    <numeric name="obstacle_radius" data="0.06"/>
+    <!-- Cylinder half-length in y: cost models the obstacle as the segment
+         [o - half_y*y, o + half_y*y]. 0 => degenerate point (sphere). -->
+    <numeric name="obstacle_half_y" data="0.15"/>
+    <numeric name="obstacle_margin" data="0.02"/>
+    <!-- EE-tip keep-out radius (separate from the wrist tube's 0.18). Must cover
+         the gripper's y half-width (~0.06): = obstacle_radius 0.06 + gripper
+         half 0.06 + margin. 0.12 grazed the gripper; 0.16 => 0 contacts. -->
+    <numeric name="obstacle_tip_thr" data="0.12"/>
+    <numeric name="obstacle_extra_margin" data="0.02"/>   <!-- 모든 장애물 keep-out에 +4cm (hand 마진 넓힘) -->
+    <numeric name="joint_limit_margin" data="0.10"/>      <!-- 관절 한계에서 안쪽으로 둘 saturation margin (rad) -->
+    <!-- Dynamic-obstacle sweep (TransitionLocked). After the EE first reaches
+         the target (within obs_reach_thr) or obs_timeout elapses, the obstacle
+         oscillates in y on the +y SIDE of the EE (never crosses to the EE):
+           y(t) = target_y + obs_y_near + obs_amp*(1+cos(2π(t-t0)/obs_period))/2
+         t0 -> far (spawn, +y), approaches in -y to obs_y_near (near-miss),
+         recedes. Closest center-to-EE = obs_y_near (> obstacle_radius => no
+         penetration). x,z held at target. -->
+    <numeric name="obs_y_near"    data="0.10"/>
+    <numeric name="obs_amp"       data="0.15"/>
+    <numeric name="obs_period"    data="4.0"/>
+    <numeric name="obs_reach_thr" data="0.03"/>
+    <numeric name="obs_timeout"   data="4.0"/>
+
+    <!-- FM-as-cost-bias default (HOME_Q). FlowMPPI overwrites at runtime. -->
+    <numeric name="q_fm_target" size="7" data="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+
+    <!-- descent_time / linear_time = 0 -> mocap pinned at target from t=0.
+         MPPI searches the obstacle-avoiding path freely. -->
+    <numeric name="descent_time" data="0.0"/>
+    <numeric name="linear_time"  data="0.0"/>
+  </custom>
+
+  <statistic extent="0.8" center="0.453 0.163 0.381"/>
+
+  <visual>
+    <quality shadowsize="8192"/>
+    <global azimuth="133.0" elevation="-11.8"/>
+    <scale framelength=".3" framewidth=".03"/>
+  </visual>
+
+  <default>
+    <geom solref=".001 1"/>
+  </default>
+
+  <worldbody>
+    <site name="world"/>
+    <!-- extra directional light removed to match Go2/G1 floor lighting (headlight only). visual-only. -->
+    <!-- <light pos="0 -0.1 0.5" dir="0 0.2 -1" diffuse="0.7 0.7 0.7" specular="0.3 0.3 0.3"
+        directional="true" castshadow="true"/> -->
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
+
+    <!-- STATIC y-axis CYLINDER obstacle = a WALL across the path's y-range (a
+         sphere could be circumvented sideways). Welded to the world at
+         obstacle_xyz. FM prior knows nothing about it; CostObstacle reads this
+         body's xpos and models it as the segment obj_a..obj_b spanning
+         +-obstacle_half_y in y. Park at "5 5 5" for a free-space run. fromto sets
+         the cylinder axis (local frame); size = radius. NO pair margin (true mesh
+         contact only — a margin reported phantom contacts before actual overlap). -->
+    <body name="obstacle" pos="0.495 0.0 0.444">
+      <geom name="obstacle" type="cylinder" fromto="0 -0.15 0  0 0.15 0" size="0.06"
+            rgba="0.50 0.50 0.55 0.75"
+            contype="1" conaffinity="1" solref=".005 1"/>
+    </body>
+
+    <!-- Start / target visual markers. -->
+    <site name="start_marker"  pos="0.40 0 0.34" size="0.018" rgba="0.10 0.95 0.20 0.0"/>
+    <site name="target_marker" pos="0.640 0.054 0.116" size="0.018" rgba="0.95 0.10 0.10 0.0"/>
+  </worldbody>
+
+  <contact>
+    <exclude body1="world" body2="left_finger"/>
+    <exclude body1="world" body2="right_finger"/>
+    <exclude body1="left_finger" body2="right_finger"/>
+
+    <!-- Explicit obstacle/robot pairs for the named FR3 collision geoms.
+         hand_c + finger collision geoms are unnamed; they pair via
+         default contype/conaffinity automatic matching. -->
+    <pair geom1="obstacle" geom2="fr3_link0_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link1_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link2_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link3_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link4_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link5_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link6_collision"/>
+    <pair geom1="obstacle" geom2="fr3_link7_collision"/>
+  </contact>
+
+  <keyframe>
+    <key name="home" qpos="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816" ctrl="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+  </keyframe>
+
+  <sensor>
+    <!-- kL2 (norm=2): known-good baseline (strong near-target pull => converges).
+         NOTE: reference MPPI_tau.cu uses quadratic here; kept kL2 because the
+         low+forward reach is a hard kinematic reconfiguration that quadratic's
+         vanishing near-target gradient could not complete. -->
+    <user name="Reach_pos"         dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Reach_ori"         dim="3" user="2 50000   0 500000   0.01"/>
+    <!-- Sparse count: residual = N (tubes inside safety zone, 0..4). norm=2/kL2
+         => cost = 30000 * N (LINEAR), matching MPPI_tau.cu's "cost_col += 30000"
+         per colliding link (line 1748). NOT quadratic — the reference collision
+         term is a flat per-link constant, so this stays kL2. -->
+    <user name="Obstacle"          dim="1" user="2 30000   0 300000   0.01"/>
+    <!-- Regularizers kept kL2 (norm=2): quadratic hurt them (joint_cent slowed
+         orientation; joint_vel made the arm too fast). Not paper-critical. -->
+    <user name="joint_cent"        dim="7" user="2 20      0 5000     1"/>
+    <user name="joint_vel_penalty" dim="7" user="0 4000    0 50000    0.01"/>
+    <!-- Joint-limit saturation margin. DISABLED (weight 0) for baseline recovery
+         — verified NOT to be the descent blocker. Hinge on [qmin+m, qmax-m];
+         margin via "joint_limit_margin". Re-enable by raising this weight. -->
+    <user name="joint_limit"       dim="7" user="0 0       0 10000000 0.01"/>
+    <!-- u_reg OFF: ctrl is a q-target here, not torque — penalizing it toward 0
+         is meaningless. Weight 0 keeps the residual slot (dim match) but inert. -->
+    <user name="u_reg"             dim="7" user="2 0.0     0 1        0.01"/>
+    <!-- QUADRATIC (norm=0): cost = w * 0.5*||scale*(q-q_fm)||^2 = alpha*||q-q_fm||^2
+         with alpha = 0.5*w*scale^2. FM prior injection term (cost_residual mode). -->
+    <user name="FM_track"          dim="7" user="0 10000   0 50000"/>
+
+    <framepos  name="hand"               objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient"        objtype="site" objname="hand_site"/>
+    <framepos  name="hand_target"        objtype="site" objname="hand_copy_site"/>
+    <framequat name="hand_target_orient" objtype="site" objname="hand_copy_site"/>
+    <framepos  name="trace0"             objtype="site" objname="hand_site"/>
+  </sensor>
+
+  <include file="fr3_yeshand_pos.xml"/>
+</mujoco>

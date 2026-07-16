@@ -67,12 +67,14 @@ void SamplingPlanner::Initialize(mjModel* model, const Task& task) {
   // set number of trajectories to rollout. MJPC_TRAJECTORIES env var
   // overrides task.xml for FlowMPPI-vs-MPPI sweep experiments.
   num_trajectory_ = GetNumberOrDefault(10, model, "sampling_trajectories");
-  if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
-    int v = std::atoi(e);
-    if (v > 0) {
-      num_trajectory_ = v;
-      std::fprintf(stderr,
-                   "[Sampling] MJPC_TRAJECTORIES override: N=%d\n", v);
+  if (task.Name() != "G1 Stand") {
+    if (const char* e = std::getenv("MJPC_TRAJECTORIES"); e && e[0]) {
+      int v = std::atoi(e);
+      if (v > 0) {
+        num_trajectory_ = v;
+        std::fprintf(stderr,
+                     "[Sampling] MJPC_TRAJECTORIES override: N=%d\n", v);
+      }
     }
   }
 

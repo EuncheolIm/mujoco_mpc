@@ -14,7 +14,7 @@
     <numeric name="sampling_spline_points" data="30"/>
     <numeric name="sampling_representation" data="0"/>
     <numeric name="sampling_exploration" data="1.0"/>
-    <numeric name="sampling_lambda" data="0.1"/>
+    <numeric name="sampling_lambda" data="1000"/>
     <numeric name="sampling_dc_noise" data="1"/>
     <numeric name="sampling_std_per_joint" size="7" data="2 2 2 2 1 1 1"/>
     <numeric name="gradient_spline_points" data="6"/>
@@ -25,9 +25,26 @@
     <!-- Single sphere obstacle. FM prior knows nothing about it; the
          Obstacle cost is the only signal that drives avoidance.
          Safety: keep |ee - obstacle_xyz| > obstacle_radius + obstacle_margin. -->
-    <numeric name="obstacle_xyz"    size="3" data="0.56 0.00 0.34"/>
+    <numeric name="obstacle_xyz"    size="3" data="0.46 0.00 0.34"/>
     <numeric name="obstacle_radius" data="0.06"/>
     <numeric name="obstacle_margin" data="0.02"/>
+    <!-- EE-tip keep-out radius (separate from the wrist tube's 0.18). Thin
+         fingertip => small value. = obstacle_radius + tip half-width + margin. -->
+    <numeric name="obstacle_tip_thr" data="0.16"/>
+    <!-- Dynamic-obstacle sweep (TransitionLocked). After the EE first reaches
+         the target (within obs_reach_thr) or obs_timeout elapses, the obstacle
+         oscillates in y on the +y SIDE of the EE (never crosses to the EE):
+           y(t) = target_y + obs_y_near + obs_amp*(1+cos(2π(t-t0)/obs_period))/2
+         range [target_y+obs_y_near, target_y+obs_y_near+obs_amp]:
+           t0 -> far (spawn, +y), approaches in -y to obs_y_near (near-miss),
+           recedes. Closest center-to-EE = obs_y_near (> obstacle_radius so it
+           does NOT penetrate the EE). x,z held at target. -->
+    <numeric name="obs_y_near"    data="0.10"/>
+    <numeric name="obs_amp"       data="0.15"/>
+    <numeric name="obs_period"    data="4.0"/>
+    <numeric name="obs_reach_thr" data="0.0"/>
+    <numeric name="obs_timeout"   data="99999"/>
+    <numeric name="ws_max_qdot"   data="100.0"/>
 
     <!-- FM-as-cost-bias default (HOME_Q). FlowMPPI overwrites at runtime. -->
     <numeric name="q_fm_target" size="7" data="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
@@ -56,19 +73,18 @@
         directional="true" castshadow="true"/>
     <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="blue_grid"/>
 
-    <!-- Single sphere obstacle (gray). contype/conaffinity=1 so MuJoCo
-         generates real contacts with FR3 collision geoms — robot is
-         physically blocked when avoidance fails. Detect via data->ncon /
-         the <contact><pair> entries below. solref slightly softened so
-         contact is visible but not explosive. -->
-    <body name="obstacle" pos="0.56 0 0.34">
+    <!-- DYNAMIC sphere obstacle (mocap). Parked out of the workspace until the
+         EE first reaches the target, then TransitionLocked sweeps it in y past
+         the EE (see obs_* numerics). mocap=true => kinematically positioned each
+         step, still collides with FR3 geoms. CostObstacle reads its live xpos. -->
+    <body name="obstacle" mocap="true" pos="0.72 0.20 5.0">
       <geom name="obstacle" type="sphere" size="0.06"
             rgba="0.50 0.50 0.55 0.75"
             contype="1" conaffinity="1" solref=".005 1"/>
     </body>
 
     <!-- Start / target visual markers. -->
-    <site name="start_marker"  pos="0.40 0 0.34" size="0.018" rgba="0.10 0.95 0.20 0.9"/>
+    <site name="start_marker"  pos="0.40 0 0.34" size="0.018" rgba="0.10 0.95 0.20 0.0"/>
     <site name="target_marker" pos="0.72 0 0.34" size="0.018" rgba="0.95 0.10 0.10 0.9"/>
   </worldbody>
 

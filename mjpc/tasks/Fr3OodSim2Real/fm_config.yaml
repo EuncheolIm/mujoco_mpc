@@ -1,0 +1,55 @@
+# ==========================================================================
+# Fr3OodSim2Real — prior = handoff_single_target ACT policy (single fixed
+# target reach), exported to ONNX and driven through the MLP guide path.
+#
+# The ACT prior always drives the EE toward its memorized target (0.5,0,0.336)
+# regardless of the commanded goal (it has no goal input). This makes it an
+# ideal OOD prior: moving the task target leaves the prior mismatched.
+#
+# Select the injection mode at launch:
+#   MJPC_FM_MODE=cost  -> Proximal Prior Injection (q_rl cost-residual)  [paper ★]
+#   MJPC_FM_MODE=wta   -> warm-start + dual-nominal WTA (U_p)
+# Select the task target at launch (default = prior's ID target):
+#   MJPC_TARGET_X/Y/Z  (ID: 0.5 0 0.336 ; OOD example: 0.5 0.35 0.336)
+# ==========================================================================
+
+# ---- mjpc runtime ----
+tasks_dir: mjpc/tasks
+autorun: true
+# NOTE: planner is intentionally NOT set here. Setting it would export
+# MJPC_PLANNER (via setenv_if_unset) and force the planner on every load/switch,
+# which overrides the GUI planner dropdown. The default planner comes from
+# task.xml (<agent_planner> = 13 = PriorMPPI); switch freely in the GUI, or pass
+# MJPC_PLANNER=<idx> explicitly for headless sweeps.
+horizon: 0.20         # paper FR3 operating point
+trajectories: 32      # paper FR3 K
+knots: 30
+lambda: 0.1
+
+# ---- injection mode ----
+fm_mode: cost         # cost (proximal, default) | wta (warm-start).  MJPC_FM_MODE overrides.
+fm_step_indexed: true
+fm_track_scale: 1.0   # alpha (paper FR3 alpha=1). 0 disables the prior. MJPC_FM_TRACK_SCALE overrides.
+fm_frac: 0.5          # wta only: fraction of rollouts seeded from the prior nominal U_p.
+
+# ---- guide model: ACT student exported to ONNX ----
+guide_type: mlp       # synchronous one-shot ONNX (MLPGuidePolicy). MJPC_GUIDE_TYPE overrides.
+mlp_checkpoint: /home/kkomji/Euncheol/mujoco_mpc/mjpc/tasks/Fr3OodSim2Real/checkpoints/act_single_target/act.onnx
+mlp_stats:      /home/kkomji/Euncheol/mujoco_mpc/mjpc/tasks/Fr3OodSim2Real/checkpoints/act_single_target/normalization_stats.npz
+
+# ACT was trained at 50 Hz control (chunk of 40 steps @ dt=0.02 s = 0.8 s).
+fm_chunk_dt: 0.02
+fm_te_decay: 0.01
+fm_te_buffer: 10
+fm_chunk_advance: true
+no_temporal_ensemble: false
+lookahead: 0.20
+vel_ff: true
+
+# ---- PD control law (used by FMOnly / FlowMPPI warm-start torque conversion).
+# With position actuators the q-space warm-start branch writes q_d directly, so
+# these gains are only a fallback; kept consistent with the handoff env PD. ----
+kp: 600.0
+kd: 30.0
+tau_max_big: 87.0
+tau_max_small: 12.0

@@ -32,6 +32,7 @@
 #include "mjpc/tasks/manipulation/manipulation.h"
 // DEEPMIND INTERNAL IMPORT
 #include "mjpc/tasks/op3/stand.h"
+#include "mjpc/tasks/g1/stand.h"
 #include "mjpc/tasks/panda/panda.h"
 #include "mjpc/tasks/particle/particle.h"
 #include "mjpc/tasks/quadrotor/quadrotor.h"
@@ -42,16 +43,23 @@
 #include "mjpc/tasks/walker/walker.h"
 
 #include "mjpc/tasks/Fr3/fr3.h"
+#include "mjpc/tasks/Fr3Reach/fr3.h"
+#include "mjpc/tasks/Fr3OodSim2Real/fr3.h"
 #include "mjpc/tasks/Fr3MazeForce/fr3_maze_force.h"
 #include "mjpc/tasks/Fr3Obstacle/fr3_obstacle.h"
+#include "mjpc/tasks/Fr3ObstacleQ/fr3_obstacle.h"
 
 namespace mjpc {
 
 std::vector<std::shared_ptr<Task>> GetTasks() {
   return {
       std::make_shared<FR3>(),
+      std::make_shared<FR3Reach>(),
+      std::make_shared<FR3OodSim2Real>(),
+      std::make_shared<FR3ObstacleQ>(),
       std::make_shared<FR3MazeForce>(),
       std::make_shared<FR3Obstacle>(),
+      std::make_shared<g1::Stand>(),
       // std::make_shared<Acrobot>(),
       // std::make_shared<Allegro>(),
       // std::make_shared<aloha::Handover>(),

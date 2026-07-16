@@ -15,6 +15,7 @@
 #include "mjpc/tasks/Fr3Obstacle/fr3_obstacle.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -58,74 +59,91 @@ void FR3Obstacle::ResidualFn::Residual(const mjModel* model, const mjData* data,
 void FR3Obstacle::TransitionLocked(mjModel* model, mjData* data) {
   // hand_copy site offset: site is at body-local (0,0,0.214) and the mocap
   // body quat (0,1,0,0) flips +z -> -z, so the site ends up at world
-  // z = mocap_z - 0.214. To place the visualized target site at world (x,y,z),
-  // set mocap_pos = (x, y, z + kHandCopySiteZ).
+  // z = mocap_z - 0.214.
   constexpr double kHandCopySiteZ = 0.214;
+
+  // Resolve mocap indices by body (robust to body order — the obstacle body is
+  // declared before the included robot's hand_copy, so they cannot be assumed
+  // to be mocap 0/1 in any fixed order).
+  int tgt_body = mj_name2id(model, mjOBJ_BODY, "hand_copy");
+  int obs_body = mj_name2id(model, mjOBJ_BODY, "obstacle");
+  int tgt_mid = (tgt_body >= 0) ? model->body_mocapid[tgt_body] : -1;
+  int obs_mid = (obs_body >= 0) ? model->body_mocapid[obs_body] : -1;
+
+  // Raw world EE target.
+  double tgt[3] = {0.72, 0.0, 0.34};
+  int tid = mj_name2id(model, mjOBJ_NUMERIC, "reach_target_xyz");
+  if (tid >= 0)
+    for (int i = 0; i < 3; ++i)
+      tgt[i] = model->numeric_data[model->numeric_adr[tid] + i];
 
   if (!traj_init_ || data->time < traj_t0_) {
     traj_t0_ = data->time;
-
-    // Final mocap pos from `reach_target_xyz` numeric (world EE target).
-    int tid = mj_name2id(model, mjOBJ_NUMERIC, "reach_target_xyz");
-    if (tid >= 0) {
-      const double* t = model->numeric_data + model->numeric_adr[tid];
-      traj_final_mocap_[0] = t[0];
-      traj_final_mocap_[1] = t[1];
-      traj_final_mocap_[2] = t[2] + kHandCopySiteZ;
-    } else {
-      traj_final_mocap_[0] = 0.72;
-      traj_final_mocap_[1] = 0.00;
-      traj_final_mocap_[2] = 0.34 + kHandCopySiteZ;
-    }
-
-    // Initial mocap pos = current EE site pose so the lerp starts at the
-    // robot's actual home EE.
+    obs_active_ = false;
+    obs_t0_ = 0.0;
+    traj_final_mocap_[0] = tgt[0];
+    traj_final_mocap_[1] = tgt[1];
+    traj_final_mocap_[2] = tgt[2] + kHandCopySiteZ;
+    // Anchor target-mocap orientation to the current EE rotation (ori residual
+    // ~0 at home).
     int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
-    if (sid >= 0) {
+    if (sid >= 0 && tgt_mid >= 0) {
       mj_kinematics(model, data);
-      const double* xp = data->site_xpos + 3 * sid;
-      traj_start_mocap_[0] = xp[0];
-      traj_start_mocap_[1] = xp[1];
-      traj_start_mocap_[2] = xp[2] + kHandCopySiteZ;
-      // Anchor mocap orientation to current EE rotation so the ori residual
-      // is ~0 at the home pose.
       const double* R = data->site_xmat + 9 * sid;
       double q[4];
       mju_mat2Quat(q, R);
-      data->mocap_quat[0] = q[0];
-      data->mocap_quat[1] = q[1];
-      data->mocap_quat[2] = q[2];
-      data->mocap_quat[3] = q[3];
-    } else {
-      for (int i = 0; i < 3; ++i) traj_start_mocap_[i] = traj_final_mocap_[i];
+      for (int i = 0; i < 4; ++i) data->mocap_quat[4 * tgt_mid + i] = q[i];
     }
     traj_init_ = true;
   }
 
-  // Two-phase trajectory (descent then linear). Both 0 by default -> mocap
-  // pinned at target from t=0 (step target). MPPI searches the
-  // obstacle-avoiding path freely.
-  double descent_time = GetNumberOrDefault(0.0, model, "descent_time");
-  double linear_time  = GetNumberOrDefault(0.0, model, "linear_time");
-  double t = data->time - traj_t0_;
-  double mid[3] = {traj_start_mocap_[0], traj_start_mocap_[1],
-                   traj_final_mocap_[2]};
-  if (t < descent_time && descent_time > 1e-6) {
-    double a = t / descent_time;
-    if (a < 0.0) a = 0.0;
-    for (int i = 0; i < 3; ++i) {
-      data->mocap_pos[i] =
-          (1.0 - a) * traj_start_mocap_[i] + a * mid[i];
+  // Target mocap: pinned at the goal (step target).
+  if (tgt_mid >= 0) {
+    data->mocap_pos[3 * tgt_mid + 0] = traj_final_mocap_[0];
+    data->mocap_pos[3 * tgt_mid + 1] = traj_final_mocap_[1];
+    data->mocap_pos[3 * tgt_mid + 2] = traj_final_mocap_[2];
+  }
+
+  // Dynamic obstacle sweep.
+  if (obs_mid >= 0) {
+    const double reach_thr = GetNumberOrDefault(0.03, model, "obs_reach_thr");
+    const double timeout   = GetNumberOrDefault(4.0,  model, "obs_timeout");
+    const double y_near    = GetNumberOrDefault(0.10, model, "obs_y_near");
+    const double amp       = GetNumberOrDefault(0.15, model, "obs_amp");
+    const double period    = GetNumberOrDefault(4.0,  model, "obs_period");
+    const double tnow = data->time - traj_t0_;
+
+    if (!obs_active_) {
+      // Activate once the EE first reaches the target (or a timeout elapses).
+      int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
+      double dist = 1e9;
+      if (sid >= 0) {
+        const double* p = data->site_xpos + 3 * sid;
+        dist = std::sqrt((p[0]-tgt[0])*(p[0]-tgt[0]) +
+                         (p[1]-tgt[1])*(p[1]-tgt[1]) +
+                         (p[2]-tgt[2])*(p[2]-tgt[2]));
+      }
+      if (dist < reach_thr || tnow > timeout) {
+        obs_active_ = true;
+        obs_t0_ = data->time;
+      }
+      // Parked out of the workspace (z=5) → no contact, no cost.
+      data->mocap_pos[3 * obs_mid + 0] = tgt[0];
+      data->mocap_pos[3 * obs_mid + 1] = tgt[1] + y_near + amp;
+      data->mocap_pos[3 * obs_mid + 2] = 5.0;
+    } else {
+      // y stays on the +y side of the EE (never crosses to y=target_y):
+      //   y(t) = target_y + y_near + amp*(1+cos(w(t-t0)))/2
+      // t0 -> far (+y_near+amp, spawn), approaches in -y to y_near (near-miss),
+      // recedes. Closest center-to-EE = y_near (> obstacle radius => no
+      // penetration of the EE).
+      const double w = 2.0 * 3.14159265358979 / (period > 1e-6 ? period : 4.0);
+      const double y = tgt[1] + y_near +
+                       amp * 0.5 * (1.0 + std::cos(w * (data->time - obs_t0_)));
+      data->mocap_pos[3 * obs_mid + 0] = tgt[0];
+      data->mocap_pos[3 * obs_mid + 1] = y;
+      data->mocap_pos[3 * obs_mid + 2] = tgt[2];
     }
-  } else if (t < descent_time + linear_time && linear_time > 1e-6) {
-    double a = (t - descent_time) / linear_time;
-    if (a < 0.0) a = 0.0;
-    if (a > 1.0) a = 1.0;
-    for (int i = 0; i < 3; ++i) {
-      data->mocap_pos[i] = (1.0 - a) * mid[i] + a * traj_final_mocap_[i];
-    }
-  } else {
-    for (int i = 0; i < 3; ++i) data->mocap_pos[i] = traj_final_mocap_[i];
   }
 }
 

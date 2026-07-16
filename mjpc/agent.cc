@@ -89,13 +89,19 @@ void Agent::Initialize(const mjModel* model) {
   }
 
   // planner — MJPC_PLANNER env var overrides task.xml for sweep experiments
-  // (0=Sampling/MPPI, 9=FlowMPPI, 10=FMOnly, etc.).
+  // (0=Sampling/MPPI, 9=FlowMPPI, 10=FMOnly, etc.).  G1 Stand is excluded so
+  // it always boots in the planner declared by its task.xml (MPPI).
+  // Use gui_task_id (the task we're switching TO) — active_task_id_ still
+  // points at the previous task here; it's only updated below at line ~141.
   planner_ = GetNumberOrDefault(0, model, "agent_planner");
-  if (const char* e = std::getenv("MJPC_PLANNER"); e && e[0]) {
-    int v = std::atoi(e);
-    if (v >= 0) {
-      planner_ = v;
-      std::fprintf(stderr, "[Agent] MJPC_PLANNER override: planner=%d\n", v);
+  const bool skip_fm_overrides = (tasks_[gui_task_id]->Name() == "G1 Stand");
+  if (!skip_fm_overrides) {
+    if (const char* e = std::getenv("MJPC_PLANNER"); e && e[0]) {
+      int v = std::atoi(e);
+      if (v >= 0) {
+        planner_ = v;
+        std::fprintf(stderr, "[Agent] MJPC_PLANNER override: planner=%d\n", v);
+      }
     }
   }
 
@@ -110,11 +116,13 @@ void Agent::Initialize(const mjModel* model) {
   // planning horizon — MJPC_HORIZON env var (seconds) overrides task.xml for
   // sweep experiments (FlowMPPI vs MPPI param comparison).
   horizon_ = GetNumberOrDefault(0.5, model, "agent_horizon");
-  if (const char* e = std::getenv("MJPC_HORIZON"); e && e[0]) {
-    double v = std::atof(e);
-    if (v > 0) {
-      horizon_ = v;
-      std::fprintf(stderr, "[Agent] MJPC_HORIZON override: horizon=%g s\n", v);
+  if (!skip_fm_overrides) {
+    if (const char* e = std::getenv("MJPC_HORIZON"); e && e[0]) {
+      double v = std::atof(e);
+      if (v > 0) {
+        horizon_ = v;
+        std::fprintf(stderr, "[Agent] MJPC_HORIZON override: horizon=%g s\n", v);
+      }
     }
   }
 
@@ -180,6 +188,15 @@ void Agent::Initialize(const mjModel* model) {
   int core_essential_thread = 1;
   planner_threads_ =
       std::max(1, NumAvailableHardwareThreads() - 3 - 2 * estimator_threads_ - core_essential_thread);
+  // MJPC_PLANNER_THREADS env overrides the auto count — lower it to leave CPU
+  // for other apps / screen recording so the real-time planner isn't starved.
+  if (const char* e = std::getenv("MJPC_PLANNER_THREADS"); e && e[0]) {
+    int v = std::atoi(e);
+    if (v >= 1) {
+      planner_threads_ = v;
+      std::fprintf(stderr, "[Agent] MJPC_PLANNER_THREADS override: %d\n", v);
+    }
+  }
   // ================== //
 
   // differentiable planning model
@@ -1198,8 +1215,12 @@ void Agent::Plots(const mjData* data, int shift) {
   // No gravity comp / world rotation needed (older code applied both,
   // which inverted sign and added a -mg offset).
   double F_press_z = 0.0;
-  double* F_sensor = SensorByName(model_, data, "hand_force");
-  if (F_sensor) F_press_z = F_sensor[2];
+  // Silent lookup: hand_force is Fr3-only; G1/other tasks lack it and we
+  // don't want a stderr spam every plot tick.
+  int hf_id = mj_name2id(model_, mjOBJ_SENSOR, "hand_force");
+  if (hf_id >= 0) {
+    F_press_z = data->sensordata[model_->sensor_adr[hf_id] + 2];
+  }
   double fz_bounds[2] = {-10.0, 80.0};
   PlotUpdateData(&plots_.planner, fz_bounds,
                  plots_.planner.linedata[0][0] + 1, F_press_z, 100, 0, 0, 1,

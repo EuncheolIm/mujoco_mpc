@@ -91,9 +91,9 @@ fm_ode_steps: 12
 
 # ============ MLP student model (guide_type=mlp) ============
 # Env vars MJPC_MLP_CKPT / MJPC_MLP_STATS override these paths if set.
-# Leave both empty until the distilled MLP ONNX is exported.
-mlp_checkpoint:
-mlp_stats:
+# Distilled MLP student (v26), one-shot synchronous inference.
+mlp_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/student_mlp_v26/student.onnx
+mlp_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/student_mlp_v26/normalization_stats.npz
 
 # ============ CLIK analytic guide (guide_type=clik) ============
 # Hand-engineered DLS Closed-Loop IK unrolled `clik_horizon` times to build

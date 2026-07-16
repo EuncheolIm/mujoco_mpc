@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -34,10 +35,12 @@
 #include "mjpc/array_safety.h"
 #include "mjpc/agent.h"
 #include "mjpc/policies/fm_config.h"
+#include "mjpc/tasks/Fr3ObstacleQ/fr3_experiment.h"
 #include "mjpc/estimators/estimator.h"
 #include "mjpc/simulate.h"  // mjpc fork
 #include "mjpc/task.h"
 #include "mjpc/threadpool.h"
+#include "mjpc/timing_globals.h"
 #include "mjpc/utilities.h"
 
 ABSL_FLAG(bool, planner_enabled, false,
@@ -92,6 +95,88 @@ void controller(const mjModel* m, mjData* data) {
     sim->agent->ActivePlanner().ActionFromPolicy(
         data->ctrl, &sim->agent->state.state()[0],
         sim->agent->state.time());
+  }
+  // Env-gated EE->target distance readout (MJPC_FR3_DIST_LOG) for FR3, so the GUI
+  // can be compared against the headless ep/eth metric. ~2 Hz to stderr.
+  static const bool fr3_dist = std::getenv("MJPC_FR3_DIST_LOG") != nullptr;
+  if (fr3_dist) {
+    static int fr3_obs_geom = mj_name2id(m, mjOBJ_GEOM, "obstacle");
+    static int fr3_ncon = 0;   // accumulated obstacle-contact steps (whole run)
+    // Env-gated qpos dump (MJPC_FR3_QPOS_OUT=<path>) at 50 Hz sim time so the
+    // EXECUTED run can be re-rendered offline (paper stills + videos share the
+    // exact same trajectory).
+    static FILE* fr3_qf = []() -> FILE* {
+      const char* p = std::getenv("MJPC_FR3_QPOS_OUT");
+      return (p && p[0]) ? std::fopen(p, "w") : nullptr;
+    }();
+    if (fr3_qf) {
+      static double fr3_qlast = -1e9;
+      if (data->time - fr3_qlast >= 0.02) {
+        fr3_qlast = data->time;
+        std::fprintf(fr3_qf, "%.4f", data->time);
+        for (int j = 0; j < m->nq; j++) std::fprintf(fr3_qf, " %.6f", data->qpos[j]);
+        std::fprintf(fr3_qf, "\n");
+        std::fflush(fr3_qf);
+      }
+    }
+    if (fr3_obs_geom >= 0)
+      for (int c = 0; c < data->ncon; c++)
+        if (data->contact[c].geom[0] == fr3_obs_geom ||
+            data->contact[c].geom[1] == fr3_obs_geom) { fr3_ncon++; break; }
+    static double fr3_last = -1e9;
+    if (data->time - fr3_last > 0.5) {
+      fr3_last = data->time;
+      double* h  = mjpc::SensorByName(m, data, "hand");
+      double* ht = mjpc::SensorByName(m, data, "hand_target");
+      double* hq = mjpc::SensorByName(m, data, "hand_orient");
+      double* tq = mjpc::SensorByName(m, data, "hand_target_orient");
+      if (h && ht && hq && tq) {
+        double ep = std::sqrt((h[0]-ht[0])*(h[0]-ht[0]) + (h[1]-ht[1])*(h[1]-ht[1]) +
+                              (h[2]-ht[2])*(h[2]-ht[2]));
+        double tc[4], eq[4], aa[3];
+        mju_negQuat(tc, tq); mju_mulQuat(eq, tc, hq); mju_quat2Vel(aa, eq, 1.0);
+        std::fprintf(stderr, "[FR3Dist] t=%.2f  ep=%.1f mm  eth=%.1f deg  ncon=%d\n",
+                     data->time, ep * 1000.0, mju_norm3(aa) * 57.2958, fr3_ncon);
+        // Convergence auto-exit (MJPC_FR3_CONV_EXIT="ep_mm eth_deg hold_s"):
+        // once ep/eth stay below the SUCCESS thresholds continuously for hold_s
+        // sim-seconds, request exit. Score-invariant early termination: the
+        // final held window is by construction below threshold, so prog/success
+        // read the same as a full-length run. Non-converging runs are cut by
+        // MJPC_AUTOEXIT instead.
+        static const auto conv_cfg = []() {
+          double v[3] = {-1, -1, -1};
+          if (const char* e = std::getenv("MJPC_FR3_CONV_EXIT"); e && e[0])
+            std::sscanf(e, "%lf %lf %lf", &v[0], &v[1], &v[2]);
+          return std::array<double, 3>{v[0], v[1], v[2]};
+        }();
+        if (conv_cfg[0] > 0) {
+          static double conv_since = -1.0;
+          bool ok = (ep * 1000.0 < conv_cfg[0]) &&
+                    (mju_norm3(aa) * 57.2958 < conv_cfg[1]);
+          if (!ok) conv_since = -1.0;
+          else if (conv_since < 0) conv_since = data->time;
+          else if (data->time - conv_since >= conv_cfg[2]) {
+            std::fprintf(stderr,
+                "[FR3Dist] converged (ep<%.0fmm eth<%.0fdeg held %.0fs) -> exit\n",
+                conv_cfg[0], conv_cfg[1], conv_cfg[2]);
+            sim->exitrequest.store(true);
+          }
+        }
+        // Collision auto-exit (MJPC_FR3_COLL_EXIT=<ncon>): a collided run is
+        // scored prog=0 no matter what follows, so exit the moment the
+        // collision condition (accumulated obstacle-contact steps > threshold)
+        // is met.
+        static const int coll_exit = []() {
+          const char* e = std::getenv("MJPC_FR3_COLL_EXIT");
+          return (e && e[0]) ? std::atoi(e) : -1;
+        }();
+        if (coll_exit >= 0 && fr3_ncon > coll_exit) {
+          std::fprintf(stderr, "[FR3Dist] collided (ncon=%d > %d) -> exit\n",
+                       fr3_ncon, coll_exit);
+          sim->exitrequest.store(true);
+        }
+      }
+    }
   }
   // if noise
   if (!sim->agent->allocate_enabled && sim->uiloadrequest.load() == 0 &&
@@ -224,6 +309,7 @@ void PhysicsLoop(mj::Simulate& sim) {
       sim.filename = sim.agent->GetTaskXmlPath(sim.agent->gui_task_id);
 
       mjModel* mnew = LoadModel(sim.agent.get(), sim);
+      if (mnew) mjpc::LoadFR3Experiment(mnew);  // fr3_experiment.yaml (no-op if not FR3)
       mjData* dnew = nullptr;
       if (mnew) dnew = mj_makeData(mnew);
       if (dnew) {
@@ -241,6 +327,19 @@ void PhysicsLoop(mj::Simulate& sim) {
           sim.agent->Reset();
         }
         sim.agent->PlotInitialize();
+
+        // Reset() above cleared plan_enabled; re-apply autorun so headless/
+        // autorun runs keep the planner ON across a task (re)load (matches the
+        // interactive "Plan" button). Only affects runs with MJPC_AUTORUN set.
+        {
+          const char* ar = std::getenv("MJPC_AUTORUN");
+          bool aron = ar ? (std::atoi(ar) != 0) : mjpc::GetFMConfig().autorun;
+          if (aron) {
+            sim.agent->plan_enabled = true;
+            sim.agent->action_enabled = true;
+            std::fprintf(stderr, "[app] autorun reload: plan_enabled=1\n");
+          }
+        }
 
         sim.Load(mnew, dnew, sim.filename, true);
         m = mnew;
@@ -384,6 +483,53 @@ void PhysicsLoop(mj::Simulate& sim) {
       }
     }
 
+    // Delayed autorun unpause (see MjpcApp ctor): autorun starts paused so the
+    // planner warms up on the true initial state, then unpauses here once.
+    static const double autorun_delay_s = []() {
+      const char* a = std::getenv("MJPC_AUTORUN");
+      bool on = a ? (std::atoi(a) != 0) : mjpc::GetFMConfig().autorun;
+      if (!on) return -1.0;
+      const char* e = std::getenv("MJPC_AUTORUN_DELAY");
+      double delay = e ? std::atof(e) : 3.0;
+      return delay > 0.0 ? delay : -1.0;
+    }();
+    static const auto autorun_t0 = std::chrono::steady_clock::now();
+    static bool autorun_fired = false;
+    static bool loop_logged = false;
+    if (!loop_logged) {
+      loop_logged = true;
+      std::fprintf(stderr, "[app] physics loop start: run=%d delay_gate=%.1f\n",
+                   sim.run, autorun_delay_s);
+    }
+    static int run_prev = -99;
+    if (sim.run != run_prev) {
+      std::fprintf(stderr, "[app] run CHANGED: %d -> %d (d->time=%.3f)\n",
+                   run_prev, sim.run, d ? d->time : -1.0);
+      run_prev = sim.run;
+    }
+    if (autorun_delay_s > 0.0 && !autorun_fired &&
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      autorun_t0).count() >= autorun_delay_s) {
+      // For FM planners (planner 9), ALSO require the first FM chunk to be
+      // ready (g_qfm_valid): a cold ONNX load (e.g. first launch after a
+      // rebuild) can outlast the fixed delay, and unpausing with FM-less plans
+      // wedges the arm into the obstacle.
+      const char* pl = std::getenv("MJPC_PLANNER");
+      bool fm_ready = !(pl && std::atoi(pl) == 9) ||
+                      mjpc::g_qfm_valid.load(std::memory_order_relaxed);
+      if (fm_ready) {
+        autorun_fired = true;
+        if (!sim.run) {
+          sim.run = 1;
+          std::fprintf(stderr,
+                       "[app] autorun: unpaused after %.1f s plan warm-up\n",
+                       std::chrono::duration<double>(
+                           std::chrono::steady_clock::now() - autorun_t0)
+                           .count());
+        }
+      }
+    }
+
     // Auto-exit after sim time exceeds MJPC_AUTOEXIT seconds.
     static const double autoexit_t = []() {
       const char* e = std::getenv("MJPC_AUTOEXIT");
@@ -426,6 +572,7 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
 
   sim->filename = sim->agent->GetTaskXmlPath(sim->agent->gui_task_id);
   m = LoadModel(sim->agent.get(), *sim);
+  if (m) mjpc::LoadFR3Experiment(m);  // fr3_experiment.yaml (no-op if not FR3)
   if (m) d = mj_makeData(m);
 
   // set home keyframe
@@ -466,10 +613,19 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
   //   1) MJPC_AUTORUN env var (non-zero → on, "0" → off).
   //   2) fm_config.yaml `autorun:` flag.
   // Default: off (paused start).
+  // Autorun starts PAUSED with planning enabled; PhysicsLoop unpauses it after
+  // MJPC_AUTORUN_DELAY wall-seconds (default 3.0). This mirrors a manual run,
+  // where the planner converges on the true initial state BEFORE the user hits
+  // run — an instant start executes unconverged early actions that put the arm
+  // on a different trajectory. MJPC_AUTORUN_DELAY=0 restores the instant start.
   const char* autorun = std::getenv("MJPC_AUTORUN");
   bool autorun_on = autorun ? (std::atoi(autorun) != 0)
                             : mjpc::GetFMConfig().autorun;
-  sim->run = autorun_on ? 1 : 0;
+  double autorun_delay = 3.0;
+  if (const char* e = std::getenv("MJPC_AUTORUN_DELAY")) autorun_delay = std::atof(e);
+  sim->run = (autorun_on && autorun_delay <= 0.0) ? 1 : 0;
+  std::fprintf(stderr, "[app] ctor: autorun_on=%d delay=%.1f -> run=%d\n",
+               (int)autorun_on, autorun_delay, sim->run);
   if (autorun_on) {
     sim->agent->plan_enabled = true;
     sim->agent->action_enabled = true;

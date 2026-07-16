@@ -1,0 +1,124 @@
+<mujoco model="G1 Stand">
+  <include file="../common.xml"/>
+  <!-- Unitree G1 29-DoF position-controlled model.  Residual now follows the
+       DIAL-MPC H1 jog cost structure: gait phase clock drives foot-height
+       targets, plus velocity/yaw/upright tracking.  Task name kept as
+       "G1 Stand" so the env-override skips and slider gating stay valid. -->
+  <include file="g1.xml"/>
+  <size memory="1M"/>
+
+  <statistic center="0 0 1.0" extent="2.0"/>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.8 0.8 0.8" specular="0.1 0.1 0.1"/>
+    <map znear="0.01"/>
+    <global elevation="-15"/>
+  </visual>
+
+  <worldbody>
+    <geom name="floor" size="0 0 0.05" type="plane" material="blue_grid"/>
+  </worldbody>
+
+  <custom>
+    <!-- Match dial_mpc/examples/unitree_h1_jog.yaml (LeCAR-Lab/dial-mpc) where
+         feasible. Unmatched / acknowledged simulator-environment differences:
+           - K = 128 (mjpc kMaxTrajectory cap; DIAL-MPC: 2048)
+           - CPU mjpc vs MJX GPU rollouts (wall-clock only, not algorithm)
+           - Robot = G1 vs H1 (mass/inertia/effort_limit set per actuator)
+           - DC noise on per-rollout (sampling_dc_noise=1) kept from Fr3 line —
+             DIAL-MPC code samples per-knot Gaussian; this is one residual diff. -->
+    <numeric name="agent_planner"            data="0"/>
+    <!-- Hsample=25 steps × dt=0.02 s = 0.5 s horizon (DIAL-MPC H1 jog). -->
+    <numeric name="agent_horizon"            data="0.5"/>
+    <numeric name="agent_timestep"           data="0.02"/>
+    <numeric name="sampling_trajectories"    data="128"/>
+    <!-- Hnode=5 control knots (DIAL-MPC H1 jog). -->
+    <numeric name="sampling_spline_points"   data="5"/>
+    <numeric name="sampling_dc_noise"        data="1"/>
+    <numeric name="sampling_exploration"     data="1.0"/>
+    <!-- temp_sample=0.05 in DIAL-MPC (softmax temperature on standardised
+         rewards).  mjpc's λ multiplies un-normalised cost so absolute scale
+         differs, but keep the same number as a starting point. -->
+    <numeric name="sampling_lambda"          data="0.05"/>
+
+    <!-- DIAL-MPC diffusion knobs (jog config: Ndiffuse=4, Ndiffuse_init=10,
+         traj_diffuse_factor=0.5 → σ ×= 0.5 each inner iter).  σ schedule for
+         N=4 : 1.0 → 0.5 → 0.25 → 0.125.  For init N=10: down to 0.5^9 ≈ 2e-3. -->
+    <numeric name="sampling_n_diffuse"          data="4"/>
+    <numeric name="sampling_n_diffuse_init"     data="10"/>
+    <numeric name="sampling_traj_diffuse_factor" data="0.5"/>
+
+    <!-- Velocity command sliders (parameters[0..2]).  DIAL-MPC H1 jog default
+         = (vx=2.0, vy=0, vyaw=0).  Slider range matches IsaacLab training. -->
+    <numeric name="residual_Vel Cmd Vx"  data="2.0 -0.5 2.5"/>
+    <numeric name="residual_Vel Cmd Vy"  data="0.0 -0.5 0.5"/>
+    <numeric name="residual_Vel Cmd Wz"  data="0.0 -0.4 0.4"/>
+    <numeric name="residual_Target Z"    data="0.79 0.5 1.0"/>
+
+    <!-- DIAL-MPC jog gait (parameters_[4..6]): duty=0.3, cadence=2 Hz,
+         amplitude=0.2 m.  Foot Track residual uses these via GetFootStep. -->
+    <numeric name="residual_Cadence"     data="2.0  0.5  3.0"/>
+    <numeric name="residual_Duty"        data="0.3  0.1  1.0"/>
+    <numeric name="residual_Foot Amp"    data="0.2  0.0  0.30"/>
+
+    <!-- Per-actuator sampling std = G1 effort_limit (matches DIAL-MPC paper
+         setup of sigma_scale=1.0 × action_scale=1.0 with leg_control=torque,
+         where the env clips action ∈ [-1,1] to actuator effort range so 1σ
+         in normalised action space ≡ effort_limit in Nm).
+         G1 actuatorfrcrange per joint (from g1.xml, same order as actuators):
+           legs : 88 139 88 139 50 50  (×2 sides)
+           waist: 88 50 50
+           arms : 25 25 25 25 25 5 5   (×2 sides; wrist pitch/yaw at 5 Nm). -->
+    <numeric name="sampling_std_per_joint"
+             data="88 139 88 139 50 50
+                   88 139 88 139 50 50
+                   88 50 50
+                   25 25 25 25 25 5 5
+                   25 25 25 25 25 5 5"/>
+
+    <!-- RL-MPPI velocity command (lin_vx, lin_vy, ang_vz). Used by
+         RLMPPIPlanner as obs into the PPO actor. Slider via GUI. -->
+    <numeric name="vel_cmd" data="0.0 0.0 0.0"/>
+
+    <!-- RL-MPPI target q for the 29 actuated joints. RLMPPIPlanner overwrites
+         this every plan iter via g_qrl_target. The numeric is only a
+         placeholder; the runtime value lives in timing_globals.h. -->
+    <numeric name="q_rl_target"
+             data="0 0 0 0 0 0 0 0 0 0 0 0
+                   0 0 0
+                   0 0 0 0 0 0 0
+                   0 0 0 0 0 0 0"/>
+  </custom>
+
+  <sensor>
+    <!-- Weights track DIAL-MPC H1 jog reward weights (× 2 to compensate for
+         mjpc kQuadratic norm's 0.5·x'x factor).  Sanity-test (vanilla MPPI
+         w/ no RL) keeps RL Track at weight 0 ; runtime g_qrl_valid=false
+         already zeroes the residual, but explicit weight=0 makes it
+         tautological. -->
+    <user name="RL Track"      dim="29" user="0 0.0    0.0 100000.0"/>
+    <!-- Base Height: pelvis z − Target Z slider (DIAL-MPC weight 0.5 → 1). -->
+    <user name="Base Height"   dim="1"  user="0 1.0    0.0 100000.0"/>
+    <!-- Vel Track: pelvis body-frame (vx,vy,wz) − command (DIAL-MPC vel
+         weight 1.0 + ang_vel 1.0 → both become 2 here, kept as a single
+         3-vector with weight 2). -->
+    <user name="Vel Track"     dim="3"  user="0 2.0    0.0 100000.0"/>
+    <!-- Upright: 1 − pelvis body-z·world-z (DIAL-MPC weight 0.5 → 1). -->
+    <user name="Upright"       dim="1"  user="0 1.0    0.0 100000.0"/>
+    <!-- Ctrl Reg = energy term: motor torque magnitude (DIAL-MPC 0.01 → 0.02). -->
+    <user name="Ctrl Reg"      dim="29" user="0 0.02   0.0 10.0"/>
+    <!-- Joint Vel Reg: not in DIAL-MPC jog (default 0). -->
+    <user name="Joint Vel Reg" dim="29" user="0 0.0    0.0 10.0"/>
+    <!-- Joint Pos Reg: not in DIAL-MPC jog (default 0). -->
+    <user name="Joint Pos Reg" dim="29" user="0 0.0    0.0 100000.0"/>
+    <!-- Foot Track: DIAL-MPC gait_phase residual (weight 5.0 → 10). -->
+    <user name="Foot Track"    dim="2"  user="0 10.0   0.0 1000.0"/>
+
+    <!-- Ankle body framepos sensors used by Foot Track residual. -->
+    <framepos name="left_foot_position"  objtype="body" objname="left_ankle_roll_link"/>
+    <framepos name="right_foot_position" objtype="body" objname="right_ankle_roll_link"/>
+
+    <!-- Trace sensor: any name starting with "trace" is picked up by mjpc and
+         rendered as the predicted future trajectory in the viewer. -->
+    <framepos name="trace0" objtype="body" objname="pelvis"/>
+  </sensor>
+</mujoco>

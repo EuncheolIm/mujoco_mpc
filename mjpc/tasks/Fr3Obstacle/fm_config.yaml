@@ -38,8 +38,8 @@ fm_te_buffer: 10
 fm_ode_steps: 12
 
 # MLP student (guide_type=mlp). Env MJPC_MLP_CKPT / MJPC_MLP_STATS override.
-mlp_checkpoint:
-mlp_stats:
+mlp_checkpoint: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/student_mlp_v26/student.onnx
+mlp_stats: /home/kkomji/tmp/flow-matching-robot-control/checkpoints/student_mlp_v26/normalization_stats.npz
 
 # CLIK analytic guide (guide_type=clik). Defaults match
 # data_collection/collect_ik_data_v3.py --step_target. Env vars

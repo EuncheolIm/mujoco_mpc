@@ -111,6 +111,7 @@ private:
     bool include_ee_{false};   // if true, state includes EE position (state_dim=17)
     bool relative_goal_{false}; // if true, goal_pos = goal_pos - ee_pos at inference
     int state_dim_{14};        // 14 (default) or 17 (with EE)
+    int goal_dim_{6};          // 6 (pos+rpy) or 9 (pos+rot6d), read from stats
 
     // ODE buffers: size = horizon * action_dim
     std::vector<float> x_t_buffer_;

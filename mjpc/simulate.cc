@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -1343,6 +1344,14 @@ void UiEvent(mjuiState* state) {
   }
 
   // shortcut not handled by UI
+  // MJPC_IGNORE_KEYS: automated sweep runs pop GUI windows that can steal
+  // focus; a stray spacebar from the user's typing then toggles run and
+  // wrecks the run (unpause before plan warm-up / random pauses). With this
+  // env set, ALL keyboard shortcuts are ignored (window stays view-only).
+  static const bool ignore_keys = std::getenv("MJPC_IGNORE_KEYS") != nullptr;
+  if (ignore_keys && state->type==mjEVENT_KEY) {
+    return;
+  }
   if (state->type==mjEVENT_KEY && state->key!=0) {
     switch (state->key) {
     case ' ':                   // Mode
@@ -1798,6 +1807,25 @@ void Simulate::Render() {
   if (this->platform_ui->RefreshMjrContext(this->m, 50*(this->font+1))) {
     UiModify(&this->ui0, &this->uistate, &this->platform_ui->mjr_context());
     UiModify(&this->ui1, &this->uistate, &this->platform_ui->mjr_context());
+  }
+
+  // Log the free-camera viewpoint whenever it changes, so a good view can be
+  // read off and pasted into the model's <visual><global>/<statistic>.
+  {
+    static double la = 1e9, le = 1e9, ld = 1e9, lx = 1e9, ly = 1e9, lz = 1e9;
+    const mjvCamera& c = this->cam;
+    if (std::abs(c.azimuth - la) > 0.5 || std::abs(c.elevation - le) > 0.5 ||
+        std::abs(c.distance - ld) > 1e-3 ||
+        std::abs(c.lookat[0] - lx) > 1e-3 || std::abs(c.lookat[1] - ly) > 1e-3 ||
+        std::abs(c.lookat[2] - lz) > 1e-3) {
+      std::printf("[CAM] azimuth=%.1f elevation=%.1f distance=%.3f "
+                  "lookat=(%.3f, %.3f, %.3f)\n",
+                  c.azimuth, c.elevation, c.distance,
+                  c.lookat[0], c.lookat[1], c.lookat[2]);
+      std::fflush(stdout);
+      la = c.azimuth; le = c.elevation; ld = c.distance;
+      lx = c.lookat[0]; ly = c.lookat[1]; lz = c.lookat[2];
+    }
   }
 
   // get 3D rectangle and reduced for profiler

@@ -74,6 +74,7 @@ struct FMConfig {
   double horizon = -1.0;     // MJPC_HORIZON       (s)
   int    trajectories = -1;  // MJPC_TRAJECTORIES  (num rollouts)
   int    knots = -1;         // MJPC_KNOTS         (spline points)
+  double lambda = -1.0;      // MJPC_LAMBDA        (MPPI softmax temperature)
 
   // FlowMPPI mode. "cost" (default) = option E, FM influences MPPI via
   // a cost residual (no plan warmstart, no winner-take-all, no leak).
@@ -94,6 +95,18 @@ struct FMConfig {
   // prevents MPPI baseline from being anchored to HOME_Q). >0 activates
   // the FM-as-cost-bias for FlowMPPI cost mode.
   double fm_track_scale = -1.0;
+
+  // FM rollout fraction for wta mode (0..1): share of rollouts sampled around
+  // the FM warmstart nominal (rest around the self-correcting MPPI nominal).
+  // -1 = not set (planner default 0.5). Env MJPC_FM_FRAC overrides.
+  double fm_frac = -1.0;
+
+  // Obstacle collision keep-out thresholds (CostObstacle, meters). <0 = not set
+  // (fall back to the task.xml numeric / hardcoded default).
+  //   obstacle_tip_thr     : EE-tip (hand_site) keep-out radius. Env MJPC_OBS_TIP_THR.
+  //   obstacle_extra_margin: added to EVERY arm-vs-obstacle keep-out. Env MJPC_OBS_EXTRA_MARGIN.
+  double obstacle_tip_thr      = -1.0;
+  double obstacle_extra_margin = -1.0;
 
   // CostForce parameters.
   //   force_mode = "hinge" (upper-bound safety cap, used by FlowMPPI/FMOnly)
@@ -158,9 +171,13 @@ inline const FMConfig& GetFMConfig() {
         else if (key == "horizon")              c.horizon = std::atof(val.c_str());
         else if (key == "trajectories")         c.trajectories = std::atoi(val.c_str());
         else if (key == "knots")                c.knots = std::atoi(val.c_str());
+        else if (key == "lambda")               c.lambda = std::atof(val.c_str());
         else if (key == "fm_mode")              c.fm_mode = val;
         else if (key == "fm_step_indexed")      c.fm_step_indexed = as_bool(val);
         else if (key == "fm_track_scale")       c.fm_track_scale = std::atof(val.c_str());
+        else if (key == "fm_frac")              c.fm_frac = std::atof(val.c_str());
+        else if (key == "obstacle_tip_thr")     c.obstacle_tip_thr = std::atof(val.c_str());
+        else if (key == "obstacle_extra_margin") c.obstacle_extra_margin = std::atof(val.c_str());
         else if (key == "force_mode")           c.force_mode = val;
         else if (key == "f_max")                c.f_max = std::atof(val.c_str());
         else if (key == "force_scale")          c.force_scale = std::atof(val.c_str());
@@ -189,9 +206,13 @@ inline const FMConfig& GetFMConfig() {
     if (c.horizon      >  0)  setenv_if_unset("MJPC_HORIZON",      std::to_string(c.horizon));
     if (c.trajectories >  0)  setenv_if_unset("MJPC_TRAJECTORIES", std::to_string(c.trajectories));
     if (c.knots        >  0)  setenv_if_unset("MJPC_KNOTS",        std::to_string(c.knots));
+    if (c.lambda       >  0)  setenv_if_unset("MJPC_LAMBDA",       std::to_string(c.lambda));
     if (!c.fm_mode.empty())   setenv_if_unset("MJPC_FM_MODE",      c.fm_mode);
     if (c.fm_track_scale >= 0) setenv_if_unset("MJPC_FM_TRACK_SCALE",
                                                 std::to_string(c.fm_track_scale));
+    if (c.fm_frac >= 0)       setenv_if_unset("MJPC_FM_FRAC", std::to_string(c.fm_frac));
+    if (c.obstacle_tip_thr      >= 0) setenv_if_unset("MJPC_OBS_TIP_THR",      std::to_string(c.obstacle_tip_thr));
+    if (c.obstacle_extra_margin >= 0) setenv_if_unset("MJPC_OBS_EXTRA_MARGIN", std::to_string(c.obstacle_extra_margin));
     if (!c.force_mode.empty()) setenv_if_unset("MJPC_FORCE_MODE", c.force_mode);
     if (c.f_max       >= 0)    setenv_if_unset("MJPC_F_MAX",      std::to_string(c.f_max));
     if (c.force_scale >= 0)    setenv_if_unset("MJPC_FORCE_SCALE",std::to_string(c.force_scale));

@@ -189,8 +189,6 @@ mjpc::spline::SplineInterpolation interpolation_ =
   int num_trajectory_;
   mutable std::shared_mutex mtx_;
 
-  double F_des[3] = {0.0, 0.0, 0.0}; // Desired End effector force
-
   // ===== Flow Matching warm-start state =====
   // Lazy-loaded from env vars MJPC_FM_CKPT, MJPC_FM_STATS. When loaded,
   // FM produces an H-step q_d chunk at ~50 Hz; the chunk is blended into a
