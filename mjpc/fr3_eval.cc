@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 
@@ -83,6 +84,16 @@ int main(int argc, char** argv) {
   int obs_body = mj_name2id(model, mjOBJ_BODY, "obstacle");  // live (mocap) pos
   int oid = mj_name2id(model, mjOBJ_NUMERIC, "obstacle_xyz");
 
+  // Grasped-box <-> table contact probe (Fr3HGripperCarry): count contacts and
+  // sum normal force so we can see whether the box is jammed on the table.
+  int box_geom = mj_name2id(model, mjOBJ_GEOM, "sugar_box_geom");
+
+  // Mid-run target step: at MJPC_STEP_T seconds, set the drag target z to
+  // MJPC_STEP_Z (mocap 0). Lets us test "raise target while box is on table".
+  double step_t = std::getenv("MJPC_STEP_T") ? std::atof(std::getenv("MJPC_STEP_T")) : -1.0;
+  double step_z = std::getenv("MJPC_STEP_Z") ? std::atof(std::getenv("MJPC_STEP_Z")) : 0.0;
+  bool stepped = false;
+
   int nthreads = mjpc::NumAvailableHardwareThreads() - 2;
   if (const char* t = std::getenv("MJPC_THREADS")) nthreads = std::max(1, std::atoi(t));
   mjpc::ThreadPool pool(std::max(1, nthreads));
@@ -114,7 +125,7 @@ int main(int argc, char** argv) {
     if (ht) { tgt[0]=ht[0]; tgt[1]=ht[1]; tgt[2]=ht[2]; }
   }
 
-  std::printf("t,ee_x,ee_y,ee_z,dist_target,dist_obs_center,ncon_obs,cost,ctrl0,ctrl3,ctrl5,ori_err\n");
+  std::printf("t,ee_x,ee_y,ee_z,dist_target,dist_obs_center,ncon_obs,cost,ctrl0,ctrl3,ctrl5,ori_err,tgt_z,box_tbl_n,box_tbl_fz\n");
   int log_every = std::max(1, (int)std::round(0.05 / model->opt.timestep));  // ~20 Hz log
 
   // optional trajectory dump for offscreen video: MJPC_TRAJ_OUT=path (text, one
@@ -149,9 +160,21 @@ int main(int argc, char** argv) {
         if (hq && tq) { double tc[4], eq[4], aa[3];
           mju_negQuat(tc, tq); mju_mulQuat(eq, tc, hq); mju_quat2Vel(aa, eq, 1.0);
           oe = mju_norm3(aa); } }
-      std::printf("%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.1f,%.3f,%.3f,%.3f,%.4f\n",
+      // box <-> table contact probe
+      int btn = 0; double btfz = 0.0;
+      for (int c = 0; c < data->ncon; c++) {
+        int g1 = data->contact[c].geom[0], g2 = data->contact[c].geom[1];
+        bool box = (g1 == box_geom || g2 == box_geom);
+        const char* n1 = mj_id2name(model, mjOBJ_GEOM, g1);
+        const char* n2 = mj_id2name(model, mjOBJ_GEOM, g2);
+        bool tbl = (n1 && std::strncmp(n1, "table", 5) == 0) ||
+                   (n2 && std::strncmp(n2, "table", 5) == 0);
+        if (box && tbl) { btn++; mjtNum f[6]; mj_contactForce(model, data, c, f); btfz += f[0]; }
+      }
+      std::printf("%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.1f,%.3f,%.3f,%.3f,%.4f,%.4f,%d,%.2f\n",
                   data->time, p[0], p[1], p[2], dt, dobs, ncon, cost,
-                  data->ctrl[0], data->ctrl[3], data->ctrl[5], oe);
+                  data->ctrl[0], data->ctrl[3], data->ctrl[5], oe,
+                  data->mocap_pos[2], btn, btfz);
     }
   };
 
@@ -170,6 +193,10 @@ int main(int argc, char** argv) {
     auto wall0 = std::chrono::steady_clock::now();
     double sim0 = data->time;
     for (int i = 0; i < total_steps; i++) {
+      if (step_t > 0 && data->time >= step_t && !stepped) {
+        data->mocap_pos[2] = step_z; stepped = true;
+        std::fprintf(stderr, "[STEP] t=%.3f target z -> %.3f\n", data->time, step_z);
+      }
       agent.ActiveTask()->Transition(model, data);
       agent.state.Set(model, data);
       mj_step(model, data);                       // mjcb_control applies the policy
@@ -182,6 +209,10 @@ int main(int argc, char** argv) {
     mjcb_control = nullptr;
   } else {
     for (int i = 0; i < total_steps; i++) {
+      if (step_t > 0 && data->time >= step_t && !stepped) {
+        data->mocap_pos[2] = step_z; stepped = true;
+        std::fprintf(stderr, "[STEP] t=%.3f target z -> %.3f\n", data->time, step_z);
+      }
       agent.ActiveTask()->Transition(model, data);
       agent.state.Set(model, data);
       agent.ActivePlanner().ActionFromPolicy(

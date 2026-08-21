@@ -1,0 +1,73 @@
+<mujoco model="pot">
+  <!-- Two-handled pot with lid, imported from pot.obj (Open3D scan, metres).
+       Measured extents: body r 0.125..0.148 over z -0.120..0.020, lid dome
+       z 0.020..0.098 (centre knob), two ear handles at x = +-0.175..0.212,
+       y +-0.062, z 0.011..0.085.  Mesh origin sits at the pot's CENTRE, so the
+       body must be spawned at z = +0.120 for the base to touch the floor.
+
+       The mesh is VISUAL ONLY (contype/conaffinity 0): MuJoCo collides meshes as
+       their convex hull, which would swallow the handles and the cavity into one
+       blob.  Contact uses primitives instead - also far cheaper for the MPPI
+       rollouts.
+
+       Included AFTER fr3_H_gripper_dual.xml so the free joint lands at the END
+       of qpos and the existing keyframe layout is unchanged. -->
+  <asset>
+    <mesh name="pot_mesh" file="pot.obj"/>
+  </asset>
+
+  <worldbody>
+    <!-- quat 0.7071 0 0 0.7071 = +90 deg about z: the handles start along +-x in
+         the mesh, this turns them to +-y so the left arm (y +0.3) and the right
+         arm (y -0.3) each face one handle. -->
+    <body name="pot" pos="0.55 0 0.12" quat="0.7071068 0 0 0.7071068">
+      <freejoint name="pot_free"/>
+      <geom name="pot_visual" type="mesh" mesh="pot_mesh" mass="0"
+            contype="0" conaffinity="0" group="2" rgba="0.72 0.74 0.78 1"/>
+      <!-- collision: body + lid + knob + the two handles.
+           group 3 = the repo's collision-geom group (same as class="collision" on
+           the arms), so the GUI hides them with the rest of the collision shell
+           and only the mesh is drawn. Toggle group 3 in the viewer to see them. -->
+      <geom name="pot_body_col" group="3" type="cylinder" size="0.145 0.070" pos="0 0 -0.050"
+            mass="0.80" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_lid_col" group="3" type="cylinder" size="0.152 0.018" pos="0 0 0.034"
+            mass="0.10" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_knob_col" group="3" type="sphere" size="0.020" pos="0 0 0.080"
+            mass="0.02" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <!-- Handles: each is an ARCH - two legs rise from the pot wall and meet in
+           a horizontal bar (the part the gripper grasps). The two handles are NOT
+           mirror images: this is a scan, and the -x handle sits 13 mm off in y and
+           3 mm higher than the +x one, so each is placed from its OWN measurement
+           (mirroring the +x numbers put the -x cylinder 13 mm off the mesh, which
+           the +90 deg z rotation shows up as a world -x shift).
+             +x  bar x 0.1935, y -0.051..0.060, z 0.0697, section 22 x 18 mm
+                 legs y -0.0366 / +0.0466, foot (0.168, 0.014) -> top (0.191, 0.060)
+             -x  bar x -0.1957, y -0.064..0.046, z 0.0727, section 22 x 22 mm
+                 legs y -0.0496 / +0.0352, foot (-0.168, 0.014) -> top (-0.188, 0.060) -->
+      <geom name="pot_handle_l_bar" group="3" type="cylinder" size="0.010"
+            fromto="0.1935 -0.0506 0.0697  0.1935 0.0598 0.0697"
+            mass="0.03" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_handle_l_leg1" group="3" type="cylinder" size="0.009"
+            fromto="0.168 -0.0366 0.014  0.191 -0.0366 0.062"
+            mass="0.005" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_handle_l_leg2" group="3" type="cylinder" size="0.009"
+            fromto="0.168 0.0466 0.014  0.191 0.0466 0.062"
+            mass="0.005" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_handle_r_bar" group="3" type="cylinder" size="0.011"
+            fromto="-0.1957 -0.0639 0.0727  -0.1957 0.0463 0.0727"
+            mass="0.03" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_handle_r_leg1" group="3" type="cylinder" size="0.009"
+            fromto="-0.168 -0.0496 0.014  -0.1881 -0.0496 0.062"
+            mass="0.005" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <geom name="pot_handle_r_leg2" group="3" type="cylinder" size="0.009"
+            fromto="-0.168 0.0352 0.014  -0.1881 0.0352 0.062"
+            mass="0.005" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+            mass="0.005" contype="1" conaffinity="1" rgba="1 0 0 0.25"/>
+      <!-- grasp sites: one per handle, named in the LEFT/RIGHT arm sense (after
+           the +90 deg z rotation the +x handle faces +y = the left arm). -->
+      <site name="pot_site"      pos="0 0 0"        size="0.010" rgba="0.2 1 0.4 1" group="0"/>
+      <site name="pot_handle_l"  pos="0.1935 0.0046 0.0697" size="0.012" rgba="0.2 0.6 1 1" group="0"/>
+      <site name="pot_handle_r"  pos="-0.1957 -0.0088 0.0727" size="0.012" rgba="1 0.3 0.3 1" group="0"/>
+    </body>
+  </worldbody>
+</mujoco>

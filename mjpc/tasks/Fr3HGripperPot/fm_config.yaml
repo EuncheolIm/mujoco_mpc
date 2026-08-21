@@ -1,0 +1,23 @@
+# ==========================================================================
+# Fr3HGripperDual — FlowMPPIRpy (planner 14) with the FM prior OFF.
+# The FM guide is single-arm (7 joints); this task is dual-arm (nu=16), so we
+# run planner 14 as VANILLA MPPI: empty fm_checkpoint -> guide not loaded, and
+# alpha (fm_track_scale)=0, fm_frac=0 -> zero FM influence even if it were.
+# Keeps the nice per-joint / DC-noise / lambda tuning knobs.
+# ==========================================================================
+
+tasks_dir: mjpc/tasks
+autorun: true
+horizon: 0.4
+trajectories: 32   # K=32: at 64 the replan costs 42-49 ms against a 30 ms
+                   # agent_timestep (latency ratio 1.4) and the jaws stop tracking
+knots: 20
+lambda: 1000
+
+fm_mode: cost
+fm_track_scale: 0.0      # alpha = 0 -> no FM cost
+fm_frac: 0.0             # no FM warm-start rollouts
+
+guide_type: fm
+fm_checkpoint:           # EMPTY -> FM not loaded (vanilla MPPI)
+fm_stats:                # EMPTY

@@ -1,0 +1,102 @@
+<mujoco model="Fr3Grasp">
+  <!-- SUMO-style contact grasp: FR3 + Franka Hand (position actuators, arm 7 +
+       gripper 1), a FREE-BODY box grasped by real frictional finger contact (no
+       weld). MPPI samples joint-position targets for arm + gripper directly (no
+       low-level policy: fixed base = no legs). Cost is object-centric (drive the
+       object to a target pose), like SUMO. NOT the manipulation::Bring example. -->
+  <include file="../common.xml"/>
+
+  <size memory="10M" nuserdata="1"/>
+
+  <custom>
+    <!-- MPPI tuning matched to the working Fr3ObstacleQ FR3 reach (planner 0,
+         position actuators): horizon 0.20, 128 rollouts, lambda 1000. Cost
+         weights are scaled to ~1e3-1e4 so cost/lambda gives real softmax
+         selection (small weights + lambda 1000 => uniform weights => flailing). -->
+    <numeric name="agent_planner" data="0"/>            <!-- 0=MPPI (SUMO uses CEM=7) -->
+    <numeric name="agent_horizon" data="0.35"/>
+    <numeric name="agent_timestep" data="0.01"/>
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="128"/>
+    <numeric name="sampling_spline_points" data="10"/>
+    <numeric name="sampling_representation" data="2"/>   <!-- cubic -->
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>
+    <numeric name="sampling_dc_noise" data="1"/>
+    <!-- q-space std (rad): arm 7 sampled; gripper std=0 => fixed closed fist for
+         pushing (SUMO's default push mode). nu=8 (size must match or fatal). -->
+    <numeric name="sampling_std_per_joint" size="8" data="0.05 0.05 0.05 0.05 0.04 0.04 0.04 0.02"/>
+    <numeric name="gradient_spline_points" data="6"/>
+  </custom>
+
+  <statistic extent="0.9" center="0.4 0 0.3"/>
+  <visual>
+    <global azimuth="140" elevation="-25"/>
+    <scale framelength="0.25" framewidth="0.02"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="grid" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4"
+             rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="grid" texture="grid" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 1.6" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 0" material="grid"/>
+
+    <!-- SUMO-style GROUND manipulation: NO table. Object sits on the floor; the
+         arm (closed fist) PUSHES it along the ground to a ground target. No lift.
+         This mirrors SUMO's push/drag tasks (object never leaves the ground). -->
+
+    <!-- FREE-BODY object on the FLOOR: box pushed by finger/hand contact (no weld). -->
+    <body name="box" pos="0.5 -0.05 0.04">
+      <freejoint name="box_joint"/>
+      <geom name="box_geom" type="box" size="0.02 0.02 0.04" mass="0.4"
+            condim="6" friction="0.6 0.02 0.001" solref="0.01 1" solimp="0.95 0.99 0.001"
+            rgba="0.9 0.5 0.1 1"/>
+      <site name="box_site" pos="0 0 0" size="0.008" rgba="0.9 0.5 0.1 1" group="0"/>
+    </body>
+
+    <!-- ground target the box should be pushed to (draggable mocap, on floor). -->
+    <body name="target" mocap="true" pos="0.5 -0.05 0.05">
+      <geom name="target_geom" type="box" size="0.02 0.02 0.04" rgba="0.2 0.9 0.3 0.3"
+            contype="0" conaffinity="0"/>
+      <site name="target_site" pos="0 0 0" size="0.01" rgba="0.2 0.9 0.3 1" group="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- cost residual terms (order MUST match Residual()); total user dim = 9.
+         NOTE: no absolute-ctrl reg (position actuators: ctrl=q_desired, so an
+         abs-ctrl penalty would drag the arm to q=0 and force the gripper shut). -->
+    <user name="ObjToTarget" dim="3" user="2 40000 0 400000  0.01"/>
+    <user name="HandToObj"   dim="3" user="2 20000 0 200000  0.01"/>
+    <user name="ObjVel"      dim="3" user="2 20    0 2000    0.01"/>
+    <user name="GripClose"   dim="1" user="2 40000 0 400000  0.01"/>
+    <user name="GripperOrient" dim="3" user="2 300 0 3000  0.01"/>
+    <user name="ObjUpright"  dim="3" user="2 20000 0 200000  0.01"/>
+
+    <framepos    name="obj_pos"  objtype="site" objname="box_site"/>
+    <framepos    name="tgt_pos"  objtype="site" objname="target_site"/>
+    <framepos    name="hand_pos" objtype="site" objname="hand_site"/>
+    <framelinvel name="obj_vel"  objtype="site" objname="box_site"/>
+    <framezaxis  name="hand_zaxis" objtype="site" objname="hand_site"/>
+    <framezaxis  name="obj_zaxis"  objtype="site" objname="box_site"/>
+    <framepos    name="trace0"   objtype="site" objname="box_site"/>
+  </sensor>
+
+  <include file="fr3_grasp.xml"/>
+
+  <keyframe>
+    <!-- qpos order = box freejoint 7 (before robot) + arm 7 + finger 2 (closed fist).
+         box on the FLOOR at (0.5,-0.05,0.03); arm in a forward reach-down start;
+         fingers closed (push with a fist). -->
+    <!-- ctrl = home arm q + gripper OPEN so the planner's initial nominal HOLDS
+         the straddle pose (position actuators: ctrl=q_desired; without this the
+         nominal is 0 => arm lunges to the zero config and knocks the box away). -->
+    <key name="home"
+         qpos="0.5 -0.05 0.02 0.70710678 0 0.70710678 0  0.1225 0.3807 -0.1971 -2.3748 0.1883 2.7425 0.7000  0.04 0.04"
+         ctrl="0.1225 0.3807 -0.1971 -2.3748 0.1883 2.7425 0.7000  0.04"/>
+  </keyframe>
+</mujoco>

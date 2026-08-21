@@ -1,0 +1,649 @@
+<mujoco model="fr3_H_gripper">
+  
+  <compiler angle="radian" meshdir="assets" />
+
+  
+  
+  <option integrator="implicitfast" timestep="0.001" solver="Newton" iterations="100" jacobian="auto" tolerance="1e-8" cone="pyramidal" impratio="1" gravity="0 0 -9.81" />
+  <option>
+    <flag gravity="enable" override="enable" multiccd="enable" />
+  </option>
+
+  <default>
+    
+    <default class="fr3">
+      <joint damping="0.21" armature="0.195" />
+      <default class="visual_fr3">
+        <geom type="mesh" group="2" contype="0" conaffinity="0" />
+      </default>
+      <default class="collision">
+        <geom type="mesh" group="3" mass="0" density="0" />
+      </default>
+      <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4" />
+    </default>
+
+    
+    <default class="H_gripper">
+      <joint armature="0.1" damping="1.0" />
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="1" />
+      </default>
+      <default class="fingertip_pad_collision_1">
+        <geom type="box" group="2" size="0.004 0.007 0.0135" contype="1" conaffinity="1" mass="0.01" pos="0.012 0.0 0.018" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="fingertip_pad_collision_2">
+        <geom type="box" group="2" size="0.004 0.007 0.0135" contype="1" conaffinity="1" mass="0.01" pos="-0.012 0.0 0.018" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="rotate_A_link_collision">
+        <geom type="box" group="2" size="0.025 0.015 0.025" contype="1" conaffinity="1" mass="0.01" pos="0.085 0 -0.003" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="rotate_B_link_collision">
+        <geom type="box" group="2" size="0.025 0.012 0.01" contype="1" conaffinity="1" mass="0.01" pos="-0.085 0.032 0.01" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="rotate_C_link_collision">
+        <geom type="box" group="2" size="0.025 0.012 0.01" contype="1" conaffinity="1" mass="0.01" pos="-0.085 -0.032 0.01" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="black" rgba=".2 .2 .2 1" />
+    <material name="white" rgba="1 1 1 1" />
+    <material name="red" rgba="1 0.072272 0.039546 1" />
+    <material name="gray" rgba="0.863156 0.863156 0.863157 1" />
+    <material name="button_green" rgba="0.102241 0.571125 0.102242 1" />
+    <material name="button_red" rgba="0.520996 0.008023 0.013702 1" />
+    <material name="button_blue" rgba="0.024157 0.445201 0.737911 1" />
+    <material name="off_white" rgba="0.901961 0.921569 0.929412 1" />
+
+    
+    <mesh file="link0_0.obj" />
+    <mesh file="link0_1.obj" />
+    <mesh file="link0_2.obj" />
+    <mesh file="link0_3.obj" />
+    <mesh file="link0_4.obj" />
+    <mesh file="link0_5.obj" />
+    <mesh file="link0_6.obj" />
+    <mesh file="link1.obj" />
+    <mesh file="link2.obj" />
+    <mesh file="link3_0.obj" />
+    <mesh file="link3_1.obj" />
+    <mesh file="link4_0.obj" />
+    <mesh file="link4_1.obj" />
+    <mesh file="link5_0.obj" />
+    <mesh file="link5_1.obj" />
+    <mesh file="link5_2.obj" />
+    <mesh file="link6_0.obj" />
+    <mesh file="link6_1.obj" />
+    <mesh file="link6_2.obj" />
+    <mesh file="link6_3.obj" />
+    <mesh file="link6_4.obj" />
+    <mesh file="link6_5.obj" />
+    <mesh file="link6_6.obj" />
+    <mesh file="link6_7.obj" />
+    <mesh file="link7_0.obj" />
+    <mesh file="link7_1.obj" />
+    <mesh file="link7_2.obj" />
+    <mesh file="link7_3.obj" />
+
+    
+    <mesh name="base_link" file="gripper/base_link.STL" />
+    <mesh name="base_finger_A_link" file="gripper/base_finger_A_link.STL" />
+    <mesh name="finger_A_slide_link" file="gripper/finger_A_slide_link.STL" />
+    <mesh name="finger_A_fixed_slide_link" file="gripper/finger_A_fixed_slide_link.STL" />
+    <mesh name="finger_A_sub_link_1" file="gripper/finger_A_sub_link_1.STL" />
+    <mesh name="finger_A_sub_link_2" file="gripper/finger_A_sub_link_2.STL" />
+    <mesh name="finger_A_sub_bolt_link_1" file="gripper/finger_A_sub_bolt_link_1.STL" />
+    <mesh name="finger_A_sub_link_3" file="gripper/finger_A_sub_link_3.STL" />
+    <mesh name="finger_A_sub_bolt_link_2" file="gripper/finger_A_sub_bolt_link_2.STL" />
+    <mesh name="finger_A_sub_link_4" file="gripper/finger_A_sub_link_4.STL" />
+    <mesh name="finger_A_sub_bolt_link_3" file="gripper/finger_A_sub_bolt_link_3.STL" />
+    <mesh name="finger_A_sub_link_5" file="gripper/finger_A_sub_link_5.STL" />
+    <mesh name="finger_A_sub_link_6" file="gripper/finger_A_sub_link_6.STL" />
+    <mesh name="finger_A_sub_link_7" file="gripper/finger_A_sub_link_7.STL" />
+    <mesh name="finger_A_sub_bolt_link_4" file="gripper/finger_A_sub_bolt_link_4.STL" />
+    <mesh name="finger_A_sub_link_8" file="gripper/finger_A_sub_link_8.STL" />
+    <mesh name="finger_A_sub_link_9" file="gripper/finger_A_sub_link_9.STL" />
+    <mesh name="finger_A_sub_link_10" file="gripper/finger_A_sub_link_10.STL" />
+    <mesh name="finger_A_sub_link_11" file="gripper/finger_A_sub_link_11.STL" />
+    <mesh name="finger_A_sub_link_12" file="gripper/finger_A_sub_link_12.STL" />
+    <mesh name="finger_B_rot_link" file="gripper/finger_B_rot_link.STL" />
+    <mesh name="finger_B_link" file="gripper/finger_B_link.STL" />
+    <mesh name="finger_B_slide_link" file="gripper/finger_B_slide_link.STL" />
+    <mesh name="finger_B_fixed_slide_link" file="gripper/finger_B_fixed_slide_link.STL" />
+    <mesh name="finger_B_sub_link_1" file="gripper/finger_B_sub_link_1.STL" />
+    <mesh name="finger_B_sub_link_2" file="gripper/finger_B_sub_link_2.STL" />
+    <mesh name="finger_B_sub_bolt_link_1" file="gripper/finger_B_sub_bolt_link_1.STL" />
+    <mesh name="finger_B_sub_link_3" file="gripper/finger_B_sub_link_3.STL" />
+    <mesh name="finger_B_sub_bolt_link_2" file="gripper/finger_B_sub_bolt_link_2.STL" />
+    <mesh name="finger_B_sub_link_4" file="gripper/finger_B_sub_link_4.STL" />
+    <mesh name="finger_B_sub_bolt_link_3" file="gripper/finger_B_sub_bolt_link_3.STL" />
+    <mesh name="finger_B_sub_link_5" file="gripper/finger_B_sub_link_5.STL" />
+    <mesh name="finger_B_sub_link_6" file="gripper/finger_B_sub_link_6.STL" />
+    <mesh name="finger_B_sub_link_7" file="gripper/finger_B_sub_link_7.STL" />
+    <mesh name="finger_B_sub_bolt_link_4" file="gripper/finger_B_sub_bolt_link_4.STL" />
+    <mesh name="finger_B_sub_link_8" file="gripper/finger_B_sub_link_8.STL" />
+    <mesh name="finger_B_sub_link_9" file="gripper/finger_B_sub_link_9.STL" />
+    <mesh name="finger_B_sub_link_10" file="gripper/finger_B_sub_link_10.STL" />
+    <mesh name="finger_B_sub_link_11" file="gripper/finger_B_sub_link_11.STL" />
+    <mesh name="finger_B_sub_link_12" file="gripper/finger_B_sub_link_12.STL" />
+    <mesh name="finger_C_rot_link" file="gripper/finger_C_rot_link.STL" />
+    <mesh name="finger_C_link" file="gripper/finger_C_link.STL" />
+    <mesh name="finger_C_slide_link" file="gripper/finger_C_slide_link.STL" />
+    <mesh name="finger_C_fixed_slide_link" file="gripper/finger_C_fixed_slide_link.STL" />
+    <mesh name="finger_C_sub_link_1" file="gripper/finger_C_sub_link_1.STL" />
+    <mesh name="finger_C_sub_link_2" file="gripper/finger_C_sub_link_2.STL" />
+    <mesh name="finger_C_sub_bolt_link_1" file="gripper/finger_C_sub_bolt_link_1.STL" />
+    <mesh name="finger_C_sub_link_3" file="gripper/finger_C_sub_link_3.STL" />
+    <mesh name="finger_C_sub_bolt_link_2" file="gripper/finger_C_sub_bolt_link_2.STL" />
+    <mesh name="finger_C_sub_link_4" file="gripper/finger_C_sub_link_4.STL" />
+    <mesh name="finger_C_sub_bolt_link_3" file="gripper/finger_C_sub_bolt_link_3.STL" />
+    <mesh name="finger_C_sub_link_5" file="gripper/finger_C_sub_link_5.STL" />
+    <mesh name="finger_C_sub_link_6" file="gripper/finger_C_sub_link_6.STL" />
+    <mesh name="finger_C_sub_link_7" file="gripper/finger_C_sub_link_7.STL" />
+    <mesh name="finger_C_sub_bolt_link_4" file="gripper/finger_C_sub_bolt_link_4.STL" />
+    <mesh name="finger_C_sub_link_8" file="gripper/finger_C_sub_link_8.STL" />
+    <mesh name="finger_C_sub_link_9" file="gripper/finger_C_sub_link_9.STL" />
+    <mesh name="finger_C_sub_link_10" file="gripper/finger_C_sub_link_10.STL" />
+    <mesh name="finger_C_sub_link_11" file="gripper/finger_C_sub_link_11.STL" />
+    <mesh name="finger_C_sub_link_12" file="gripper/finger_C_sub_link_12.STL" />
+  </asset>
+
+  <worldbody>
+        
+        <geom mesh="link0_0" material="black" class="visual_fr3" />
+        <geom mesh="link0_1" material="white" class="visual_fr3" />
+        <geom mesh="link0_2" material="white" class="visual_fr3" />
+        <geom mesh="link0_3" material="white" class="visual_fr3" />
+        <geom mesh="link0_4" material="white" class="visual_fr3" />
+        <geom mesh="link0_5" material="red" class="visual_fr3" />
+        <geom mesh="link0_6" material="black" class="visual_fr3" />
+        
+        <geom name="link0_R_col" type="cylinder" size="0.07 0.04" pos="-0.02 0 0.04" class="collision" />
+
+        <body name="fr3_link1" pos="0 0 0.333" childclass="fr3">
+          <inertial pos="4.128e-07 -0.0181251 -0.0386036" quat="0.998098 -0.0605364 0.00380499 0.0110109" mass="2.92747" diaginertia="0.0239286 0.0227246 0.00610634" />
+          <joint name="fr3_joint1" axis="0 0 1" range="-2.7437 2.7437" actuatorfrcrange="-87 87" />
+          
+          <geom name="link1_R_col1" type="cylinder" size="0.06 0.06" pos="0 0 -0.13" class="collision" />
+          <geom name="link1_R_col2" type="cylinder" size="0.06 0.12" pos="0 0 0.0" euler="-1.5708 0 0" class="collision" />
+
+          <geom material="white" mesh="link1" class="visual_fr3" />
+          <body name="fr3_link2" quat="1 -1 0 0">
+            <inertial pos="0.00318289 -0.0743222 0.00881461" quat="0.502599 0.584437 -0.465998 0.434366" mass="2.93554" diaginertia="0.0629567 0.0411924 0.0246371" />
+            <joint name="fr3_joint2" axis="0 0 1" range="-1.7837 1.7837" actuatorfrcrange="-87 87" />
+            <geom material="white" mesh="link2" class="visual_fr3" />
+            
+            <geom name="link2_R_col" type="cylinder" size="0.06 0.08" pos="0 -0.16 0.0" euler="-1.5708 0 0" class="collision" />
+
+            <body name="fr3_link3" pos="0 -0.316 0" quat="1 1 0 0">
+              <inertial pos="0.0407016 -0.00482006 -0.0289731" quat="0.921025 -0.244161 0.155272 0.260745" mass="2.2449" diaginertia="0.0267409 0.0189869 0.0171587" />
+              <joint name="fr3_joint3" axis="0 0 1" range="-2.9007 2.9007" actuatorfrcrange="-87 87" />
+              <geom mesh="link3_0" material="white" class="visual_fr3" />
+              <geom mesh="link3_1" material="black" class="visual_fr3" />
+              
+              <geom name="link3_R_col1" type="capsule" size="0.04" fromto="0 0 0 0.05 0.03 -0.05" class="collision" />
+
+              <body name="fr3_link4" pos="0.0825 0 0" quat="1 1 0 0">
+                <inertial pos="-0.0459101 0.0630493 -0.00851879" quat="0.438018 0.803311 0.00937812 0.403414" mass="2.6156" diaginertia="0.05139 0.0372717 0.0160047" />
+                <joint name="fr3_joint4" axis="0 0 1" range="-3.0421 -0.1518" actuatorfrcrange="-87 87" />
+                <geom mesh="link4_0" material="white" class="visual_fr3" />
+                <geom mesh="link4_1" material="black" class="visual_fr3" />
+                
+                <geom name="link4_R_col1" type="cylinder" size="0.05 0.11" pos="0 0 0" class="collision" />
+                    <geom name="link4_R_col2" type="cylinder" size="0.055 0.08" pos="-0.09 0.1 0" euler="-1.5708 0 0" class="collision" />
+
+                <body name="fr3_link5" pos="-0.0825 0.384 0" quat="1 -1 0 0">
+                  <inertial pos="-0.00160396 0.0292536 -0.0972966" quat="0.919031 0.125604 0.0751531 -0.366003" mass="2.32712" diaginertia="0.0579335 0.0449144 0.0130634" />
+                  <joint name="fr3_joint5" axis="0 0 1" range="-2.8065 2.8065" actuatorfrcrange="-12 12" armature="0.074" frictionloss="0.763" />
+                  <geom mesh="link5_0" material="white" class="visual_fr3" />
+                  <geom mesh="link5_1" material="white" class="visual_fr3" />
+                  <geom mesh="link5_2" material="black" class="visual_fr3" />
+                  
+                  <geom name="link5_R_col1" type="cylinder" size="0.04 0.08" pos="0.0 0.09 -0.1" class="collision" />
+                      <geom name="link5_R_col2" type="cylinder" size="0.045 0.04" pos="0.0 0.07 -0.17" euler="-0.7854 0 0" class="collision" />
+                  
+                  <body name="fr3_link6" quat="1 1 0 0">
+                    <inertial pos="0.0597131 -0.0410295 -0.0101693" quat="0.621301 0.552665 0.510011 0.220081" mass="1.81704" diaginertia="0.0175039 0.0161123 0.00193529" />
+                    <joint name="fr3_joint6" axis="0 0 1" range="0.5445 4.5169" actuatorfrcrange="-12 12" armature="0.074" frictionloss="0.44" />
+                    <geom mesh="link6_0" material="button_green" class="visual_fr3" />
+                    <geom mesh="link6_1" material="white" class="visual_fr3" />
+                    <geom mesh="link6_2" material="white" class="visual_fr3" />
+                    <geom mesh="link6_3" material="gray" class="visual_fr3" />
+                    <geom mesh="link6_4" material="button_red" class="visual_fr3" />
+                    <geom mesh="link6_5" material="white" class="visual_fr3" />
+                    <geom mesh="link6_6" material="black" class="visual_fr3" />
+                    <geom mesh="link6_7" material="button_blue" class="visual_fr3" />
+                    
+                    <geom name="link6_R_col1" type="cylinder" size="0.05 0.09" pos="0 0 -0.038" class="collision" />
+
+                    <body name="fr3_link7" pos="0.088 0 0" quat="1 1 0 0">
+                      <inertial pos="0.00452258 0.00862619 -0.0161633" quat="0.727579 0.0978688 -0.24906 0.63168" mass="0.627143" diaginertia="0.000223836 0.000223642 5.64132e-07" />
+                      <joint name="fr3_joint7" axis="0 0 1" range="-3.0159 3.0159" actuatorfrcrange="-12 12" armature="0.074" frictionloss="0.248" />
+                      <geom mesh="link7_0" material="black" class="visual_fr3" />
+                      <geom mesh="link7_1" material="white" class="visual_fr3" />
+                      <geom mesh="link7_2" material="white" class="visual_fr3" />
+                      <geom mesh="link7_3" material="black" class="visual_fr3" />
+                      
+                      <geom name="link7_R_col" type="cylinder" size="0.045 0.08" pos="0 0 0.005" class="collision" />
+
+                      
+                      
+                      <site name="hand_site" pos="0 0 0.365" group="0" />
+                      <site name="frame_x" type="cylinder" pos="0.04 0 0.34" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
+                      <site name="frame_y" type="cylinder" pos="0 0.04 0.34" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
+                      <site name="frame_z" type="cylinder" pos="0 0 0.38" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
+
+                      <body name="hand" childclass="H_gripper" pos="0 0 0.220" gravcomp="0">
+                        <site name="gripper_site" type="sphere" pos="0 0 0.145" size="0.005" rgba="1 0 0 1" group="0" />
+                        <!-- v1 carry: sugar box rigidly grasped (offset 0: box center = TCP).
+                             Rigid child of hand => its 0.5 kg mass is in the arm dynamics /
+                             MPPI rollouts automatically. Collision off for v1. YCB ~4.5x9x17.5cm. -->
+                        <!-- Sugar box (YCB 4.5x9x17.5cm, 0.5kg), rigidly grasped.
+                             3-finger H-gripper closes along hand-x; pads fixed at x=+/-0.054.
+                             Box laid out in HAND frame (no quat needed, box is symmetric):
+                               hand-x (grasp/closing) = 9cm  -> half 0.045 ~ pads at 0.054 => looks pinched
+                               hand-y (sideways, horiz) = 17.5cm -> half 0.0875 (LONG axis, lies flat)
+                               hand-z (approach/vert)   = 4.5cm  -> half 0.0225 (thin => box clears table)
+                             contype/conaffinity=2: collides with table (group 2), NOT gripper/arm (group1). -->
+                        <!-- Compliant grasp: the box hangs from the hand on a stiff
+                             prismatic spring along the approach axis (hand z) instead of a
+                             rigid weld. The reach cost stays on hand_site (the HAND, free
+                             side); the box is a passive spring-loaded body. So when the box
+                             hits the table the SPRING gives (contact pins only the passive
+                             box), the hand/reach is never trapped, and raising the target
+                             lifts the hand -> box follows. 1 passive DOF (nq 7->8), not
+                             sampled by MPPI. Models real finger compliance (reduced form). -->
+                        <!-- sugar_box moved OUT of the hand (freed) -> now a free body on the floor
+                             at worldbody end, grasped by the finger pads (see below). -->
+
+                            <inertial pos="0.00343395 0.00159719 -0.0359415" quat="-0.0187647 0.714578 0.0193531 0.699036" mass="0.565346" diaginertia="0.000313332 0.000193161 0.000168441" />
+                            <geom type="mesh" group="1" rgba="0.752941 0.752941 0.752941 1" mesh="base_link" />
+                            <body name="base_finger_A_link" pos="0 0 0" gravcomp="0">
+                              
+                              <geom name="gripper_A_rot_link" class="rotate_A_link_collision" />
+                              <inertial pos="0.0913611 -3.33873e-06 -0.00984487" quat="0.00014012 0.70223 0.000145636 0.71195" mass="0.113666" diaginertia="0.000100244 9.34605e-05 2.04792e-05" />
+                              <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="base_finger_A_link" />
+                              <body name="finger_A_slide_link" pos="0 0 0" gravcomp="0">
+                                <inertial pos="0.100403 -0.000689264 0.0152046" quat="0.99971 0.00048648 -0.0240729 0.000214684" mass="0.0295918" diaginertia="5.89087e-06 5.50743e-06 1.93184e-06" />
+                                <joint name="finger_A_slide_joint" pos="0 0 0" axis="-1 0 0" type="slide" range="0 0.05"/>
+                                <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_slide_link" />
+                                <body name="finger_A_fixed_slide_link" pos="0 0 0" gravcomp="0">
+                                  <inertial pos="0.0860198 -5.22778e-06 0.0421046" quat="-0.00108407 0.70491 0.00119803 0.709294" mass="0.0331023" diaginertia="7.98034e-06 6.50412e-06 1.65664e-06" />
+                                  <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_fixed_slide_link" />
+                                  <body name="finger_A_sub_link_1" pos="0.05755 3.6407e-05 0.048" gravcomp="0">
+                                    <inertial pos="0.00242297 4.71126e-05 0.0158575" quat="0.991388 0 0.130955 0" mass="0.0107501" diaginertia="1.30838e-06 1.00946e-06 3.49854e-07" />
+                                    <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_1" />
+                                    <geom name="finger_A_sub_link_1" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                    <body name="finger_A_sub_link_2" pos="0.0054162 0 0.023766" gravcomp="0">
+                                      <inertial pos="0.00845452 3.23994e-05 0.00491046" quat="0 0.482729 0 0.87577" mass="0.00424217" diaginertia="2.57556e-07 1.9159e-07 8.79381e-08" />
+                                      <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_2" />
+                                      <body name="finger_A_sub_bolt_link_1" pos="0.020611 0 0.013013" gravcomp="0">
+                                        <inertial pos="0 -3.6407e-05 0" quat="0.707107 0.707107 0 0" mass="0.00102833" diaginertia="6.97458e-09 6.97458e-09 1.58795e-09" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_bolt_link_1" />
+                                      </body>
+                                    </body>
+                                    <body name="finger_A_sub_link_3" pos="0.0088882 0 0.039" gravcomp="0">
+                                      <inertial pos="0.00730235 -3.54189e-05 -0.000462502" quat="0.497542 0.502446 0.502446 0.497542" mass="0.00106313" diaginertia="3.87345e-08 3.68897e-08 3.34188e-09" />
+                                      <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_3" />
+                                      <body name="finger_A_sub_bolt_link_2" pos="0.02 0 0" gravcomp="0">
+                                        <inertial pos="0 0.000430635 0" quat="0.707107 0.707107 0 0" mass="0.000254576" diaginertia="1.95394e-09 1.95394e-09 2.02129e-10" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_bolt_link_2" />
+                                      </body>
+                                    </body>
+                                    <body name="finger_A_sub_link_4" pos="0.0088882 0 0.039" gravcomp="0">
+                                      <inertial pos="-0.00527081 -9.63181e-05 0.0158721" quat="0.993283 0 -0.11571 0" mass="0.00701463" diaginertia="7.13015e-07 6.22479e-07 1.10107e-07" />
+                                      <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_4" />
+                                      <geom name="finger_A_sub_link_4" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                      <body name="finger_A_sub_bolt_link_3" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="0 0.000395859 0" quat="0.707107 0.707107 0 0" mass="0.00097221" diaginertia="2.36098e-08 2.36098e-08 1.30928e-09" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_bolt_link_3" />
+                                        <geom name="finger_A_sub_bolt_link_3" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                      </body>
+                                    </body>
+                                  </body>
+                                  <body name="finger_A_sub_link_5" pos="0.07755 3.6407e-05 0.048" gravcomp="0">
+                                    <inertial pos="0.00242713 -4.78586e-05 0.0140638" quat="0.992655 0.0158125 0.119935 -0.00133716" mass="0.00309025" diaginertia="3.88454e-07 3.49173e-07 4.90744e-08" />
+                                    <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_5" />
+                                    <body name="finger_A_sub_link_6" pos="0.0088882 0 0.039" gravcomp="0">
+                                      <inertial pos="-0.00462123 0.000129529 0.020669" quat="0.991082 0.00943203 -0.119963 0.0572442" mass="0.00337282" diaginertia="2.84085e-07 2.79833e-07 2.64381e-08" />
+                                      <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_6" />
+                                      
+                                      <body name="finger_A_sub_link_7" pos="0 0 0" gravcomp="0">
+                                        <inertial pos="-0.00544753 -3.51302e-05 0.0239029" quat="0.702673 -0.0790569 -0.0790569 0.702673" mass="0.000822731" diaginertia="1.07857e-07 1.0742e-07 1.39943e-09" />
+                                        <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_7" />
+                                        <geom name="finger_A_sub_link_7" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                        <body name="finger_A_sub_bolt_link_4" pos="-0.0088882 0 0.039" gravcomp="0">
+                                          <inertial pos="0 -3.6407e-05 0" quat="0.707107 0.707107 0 0" mass="0.000145243" diaginertia="4.4917e-10 4.4917e-10 7.05984e-11" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_bolt_link_4" />
+                                          <geom name="finger_A_sub_bolt_link_4" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                        </body>
+                                      </body>
+                                    </body>
+                                  </body>
+                                  <body name="finger_A_sub_link_8" pos="0.09655 3.6407e-05 0.048" gravcomp="0">
+                                    <inertial pos="-0.00533102 0.000105658 0.0174796" quat="0.985881 0 -0.167449 0" mass="0.00637668" diaginertia="2.19351e-06 2.03559e-06 2.11761e-07" />
+                                    <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_8" />
+                                    <geom name="finger_A_sub_link_8" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                    <body name="finger_A_sub_link_9" pos="-0.021289 0 0.060355" gravcomp="0">
+                                      <inertial pos="-0.00606465 -3.6407e-05 0.00603524" quat="0 0.923484 0 0.383637" mass="0.00411218" diaginertia="1.6049e-07 1.52769e-07 2.43365e-08" />
+                                      <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_9" />
+                                      <geom name="finger_A_sub_link_9" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                    </body>
+                                    <body name="finger_A_sub_link_10" pos="-0.015468 0 0.043852" gravcomp="0">
+                                      <inertial pos="-0.0052682 -0.000124117 0.00964477" quat="0.980684 0 -0.195597 0" mass="0.00419716" diaginertia="4.44826e-07 4.44655e-07 2.68863e-08" />
+                                      <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_10" />
+                                      
+                                      <body name="finger_A_sub_link_11" pos="-0.015012 0 0.033157" gravcomp="0">
+                                        <inertial pos="0 0.000426895 0" quat="0.707107 0.707107 0 0" mass="0.0014246" diaginertia="7.47232e-08 7.47232e-08 1.81821e-09" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_11" />
+                                        
+                                        <body name="finger_A_sub_link_12" pos="0 0 0" gravcomp="0">
+                                          <inertial pos="-0.00593334 -7.69454e-05 0.0113249" quat="0.664864 -0.240741 -0.240741 0.664864" mass="0.0058665" diaginertia="5.3938e-07 4.93196e-07 1.99831e-07" />
+                                          <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_12" />
+                                          <site name="finger1_site" type="sphere" pos="-0.012 0.0 0.02" size="0.005" rgba="1 0 0 1" group="0" />
+                                          <geom name="gripper_pad_1" class="fingertip_pad_collision_2" />
+                                        </body>
+                                      </body>
+                                    </body>
+                                  </body>
+                                </body>
+                              </body>
+                            </body>
+                            <body name="finger_B_rot_link" pos="0 0 0" gravcomp="0">
+                              <inertial pos="-0.0114295 0.0171665 0.0112258" quat="0.373477 0.542838 -0.317696 0.681844" mass="0.102618" diaginertia="2.77438e-05 2.33792e-05 1.1205e-05" />
+                              <geom type="mesh" group="1" rgba="0.752941 0.752941 0.752941 1" mesh="finger_B_rot_link" />
+                              
+                              <geom name="gripper_B_rot_link" class="rotate_B_link_collision" />
+                              <body name="finger_B_link" pos="-0.022149 0.0321 0" gravcomp="0">
+                                <inertial pos="-0.0399926 0.000165406 -0.00118282" quat="0.00126719 0.724452 0.00137623 0.689323" mass="0.0970798" diaginertia="6.95089e-05 6.58286e-05 8.27803e-06" />
+                                <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_link" />
+                                <body name="finger_B_slide_link" pos="0 0 0" gravcomp="0">
+                                  <inertial pos="-0.073774 -0.00703362 0.02128" quat="0.581328 -0.216158 -0.184298 0.762475" mass="0.0353981" diaginertia="2.52656e-06 2.42934e-06 1.38286e-06" />
+                                  <joint name="finger_B_slide_joint" pos="0 0 0" axis="1 0 0" type="slide" range="0 0.05"/>
+                                  <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_slide_link" />
+                                  <body name="finger_B_fixed_slide_link" pos="0 0 0" gravcomp="0">
+                                    <inertial pos="-0.0639124 3.44347e-06 0.0421046" quat="-0.00119803 0.709294 0.00108407 0.70491" mass="0.0331023" diaginertia="7.98034e-06 6.50412e-06 1.65664e-06" />
+                                    <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_fixed_slide_link" />
+                                    <body name="finger_B_sub_link_1" pos="-0.035443 0 0.048" gravcomp="0">
+                                      <inertial pos="-0.00242297 -8.35196e-05 0.0158575" quat="0.991388 0 -0.130955 0" mass="0.0107501" diaginertia="1.30838e-06 1.00946e-06 3.49854e-07" />
+                                      <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_1" />
+                                      <geom name="finger_B_sub_link_1" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                      <body name="finger_B_sub_link_2" pos="-0.0054162 0 0.023766" gravcomp="0">
+                                        <inertial pos="-0.00845452 -6.88064e-05 0.00491046" quat="0 0.87577 0 0.482729" mass="0.00424217" diaginertia="2.57556e-07 1.9159e-07 8.79381e-08" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_2" />
+                                        <body name="finger_B_sub_bolt_link_1" pos="-0.020611 0 0.013013" gravcomp="0">
+                                          <inertial pos="0 0 0" quat="0.707107 0.707107 0 0" mass="0.00102833" diaginertia="6.97458e-09 6.97458e-09 1.58795e-09" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_bolt_link_1" />
+                                        </body>
+                                      </body>
+                                      <body name="finger_B_sub_link_3" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="-0.00730235 -9.88064e-07 -0.000462502" quat="0.502446 0.497542 0.497542 0.502446" mass="0.00106313" diaginertia="3.87345e-08 3.68897e-08 3.34188e-09" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_3" />
+                                        <geom name="finger_B_sub_link_3" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                        <body name="finger_B_sub_bolt_link_2" pos="-0.02 0 0" gravcomp="0">
+                                          <inertial pos="0 -0.000467042 0" quat="0.707107 0.707107 0 0" mass="0.000254576" diaginertia="1.95394e-09 1.95394e-09 2.02129e-10" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_bolt_link_2" />
+                                        </body>
+                                      </body>
+                                      <body name="finger_B_sub_link_4" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="0.00527081 5.99111e-05 0.0158721" quat="0.993283 0 0.11571 0" mass="0.00701463" diaginertia="7.13015e-07 6.22479e-07 1.10107e-07" />
+                                        <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_4" />
+                                        <body name="finger_B_sub_bolt_link_3" pos="0.0088882 0 0.039" gravcomp="0">
+                                          <inertial pos="0 -0.000432266 0" quat="0.707107 0.707107 0 0" mass="0.00097221" diaginertia="2.36098e-08 2.36098e-08 1.30928e-09" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_bolt_link_3" />
+                                          <geom name="finger_B_sub_bolt_link_3" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                        </body>
+                                      </body>
+                                    </body>
+                                    <body name="finger_B_sub_link_5" pos="-0.055443 0 0.048" gravcomp="0">
+                                      <inertial pos="-0.00242713 1.14516e-05 0.0140638" quat="0.992655 -0.0158125 -0.119935 -0.00133716" mass="0.00309025" diaginertia="3.88454e-07 3.49173e-07 4.90744e-08" />
+                                      <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_5" />
+                                      
+                                      <body name="finger_B_sub_link_6" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="0.00462123 -0.000165936 0.020669" quat="0.991082 -0.00943203 0.119963 0.0572442" mass="0.00337282" diaginertia="2.84085e-07 2.79833e-07 2.64381e-08" />
+                                        <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_6" />
+                                        <body name="finger_B_sub_link_7" pos="0 0 0" gravcomp="0">
+                                          <inertial pos="0.00544753 -1.27677e-06 0.0239029" quat="0.702673 0.0790569 0.0790569 0.702673" mass="0.000822731" diaginertia="1.07857e-07 1.0742e-07 1.39943e-09" />
+                                          <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_7" />
+                                          <geom name="finger_B_sub_bolt_link_7" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                          <body name="finger_B_sub_bolt_link_4" pos="0.0088882 0 0.039" gravcomp="0">
+                                            <inertial pos="0 0 0" quat="0.707107 0.707107 0 0" mass="0.000145243" diaginertia="4.4917e-10 4.4917e-10 7.05984e-11" />
+                                            <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_bolt_link_4" />
+                                            <geom name="finger_B_sub_bolt_link_4" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                          </body>
+                                        </body>
+                                      </body>
+                                    </body>
+                                    <body name="finger_B_sub_link_8" pos="-0.074443 0 0.048" gravcomp="0">
+                                      <inertial pos="0.00533102 -0.000142065 0.0174796" quat="0.985881 0 0.167449 0" mass="0.00637668" diaginertia="2.19351e-06 2.03559e-06 2.11761e-07" />
+                                      <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_8" />
+                                      <geom name="finger_B_sub_link_8" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                      <body name="finger_B_sub_link_9" pos="0.021289 0 0.060355" gravcomp="0">
+                                        <inertial pos="0.00606465 0 0.00603524" quat="0 0.383637 0 0.923484" mass="0.00411218" diaginertia="1.6049e-07 1.52769e-07 2.43365e-08" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_9" />
+                                      </body>
+                                      <body name="finger_B_sub_link_10" pos="0.015468 0 0.043852" gravcomp="0">
+                                        <inertial pos="0.0052682 8.77097e-05 0.00964477" quat="0.980684 0 0.195597 0" mass="0.00419716" diaginertia="4.44826e-07 4.44655e-07 2.68863e-08" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_10" />
+                                        <body name="finger_B_sub_link_11" pos="0.015012 0 0.033157" gravcomp="0">
+                                          <inertial pos="0 -0.000463302 0" quat="0.707107 0.707107 0 0" mass="0.0014246" diaginertia="7.47232e-08 7.47232e-08 1.81821e-09" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_11" />
+
+                                          <body name="finger_B_sub_link_12" pos="0 0 0" gravcomp="0">
+                                            <inertial pos="0.00593334 4.05384e-05 0.0113249" quat="0.664864 0.240741 0.240741 0.664864" mass="0.0058665" diaginertia="5.3938e-07 4.93196e-07 1.99831e-07" />
+                                            <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_12" />
+                                            <site name="finger2_site" type="sphere" pos="0.012 0.0 0.02" size="0.005" rgba="1 0 0 1" group="0" />
+                                            <geom name="gripper_pad_2" class="fingertip_pad_collision_1" />
+                                          </body>
+                                        </body>
+                                      </body>
+                                    </body>
+                                  </body>
+                                </body>
+                              </body>
+                            </body>
+                            <body name="finger_C_rot_link" pos="0 0 0" gravcomp="0">
+                              <inertial pos="-0.0113372 -0.0169563 0.00281184" quat="0.674877 0.321674 -0.557893 0.360308" mass="0.105585" diaginertia="2.90372e-05 2.45318e-05 1.18951e-05" />
+                              <geom type="mesh" group="1" rgba="0.752941 0.752941 0.752941 1" mesh="finger_C_rot_link" />
+                              
+                              <geom name="gripper_C_rot_link" class="rotate_C_link_collision" />
+                              <body name="finger_C_link" pos="-0.022157 -0.032095 0" gravcomp="0">
+                                <inertial pos="-0.0439133 0.0019193 0.00185438" quat="-0.00114471 0.720128 -0.00157136 0.693839" mass="0.119099" diaginertia="8.33545e-05 8.06392e-05 9.73085e-06" />
+                                <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_link" />
+                                <body name="finger_C_slide_link" pos="0 0 0" gravcomp="0">
+                                  <inertial pos="-0.0737714 -0.00703183 0.02128" quat="0.581328 -0.216158 -0.184298 0.762475" mass="0.0353981" diaginertia="2.52656e-06 2.42934e-06 1.38286e-06" />
+                                  <joint name="finger_C_slide_joint" pos="0 0 0" axis="1 0 0" type="slide" range="0 0.05"/>
+                                  <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_slide_link" />
+                                  <body name="finger_C_fixed_slide_link" pos="0 0 0" gravcomp="0">
+                                    <inertial pos="-0.0639098 5.22778e-06 0.0421046" quat="-0.00119803 0.709294 0.00108407 0.70491" mass="0.0331023" diaginertia="7.98034e-06 6.50412e-06 1.65664e-06" />
+                                    <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_fixed_slide_link" />
+                                    <body name="finger_C_sub_link_1" pos="-0.03544 0 0.048" gravcomp="0">
+                                      <inertial pos="-0.00242297 -8.35196e-05 0.0158575" quat="0.991388 0 -0.130955 0" mass="0.0107501" diaginertia="1.30838e-06 1.00946e-06 3.49854e-07" />
+                                      <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_1" />
+                                      <geom name="finger_C_sub_link_1" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                      <body name="finger_C_sub_link_2" pos="-0.0054162 0 0.023766" gravcomp="0">
+                                        <inertial pos="-0.00845452 -6.88064e-05 0.00491046" quat="0 0.87577 0 0.482729" mass="0.00424217" diaginertia="2.57556e-07 1.9159e-07 8.79381e-08" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_2" />
+                                        <body name="finger_C_sub_bolt_link_1" pos="-0.020611 0 0.013013" gravcomp="0">
+                                          <inertial pos="0 0 0" quat="0.707107 0.707107 0 0" mass="0.00102833" diaginertia="6.97458e-09 6.97458e-09 1.58795e-09" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_bolt_link_1" />
+                                        </body>
+                                      </body>
+                                      <body name="finger_C_sub_link_3" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="-0.00730235 -9.88064e-07 -0.000462502" quat="0.502446 0.497542 0.497542 0.502446" mass="0.00106313" diaginertia="3.87345e-08 3.68897e-08 3.34188e-09" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_3" />
+                                        <geom name="finger_C_sub_link_3" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                        <body name="finger_C_sub_bolt_link_2" pos="-0.02 0 0" gravcomp="0">
+                                          <inertial pos="0 -0.000467042 0" quat="0.707107 0.707107 0 0" mass="0.000254576" diaginertia="1.95394e-09 1.95394e-09 2.02129e-10" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_bolt_link_2" />
+                                          <geom name="finger_C_sub_rot_joint_2" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                        </body>
+                                      </body>
+                                      <body name="finger_C_sub_link_4" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="0.00527081 5.99111e-05 0.0158721" quat="0.993283 0 0.11571 0" mass="0.00701463" diaginertia="7.13015e-07 6.22479e-07 1.10107e-07" />
+                                        <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_4" />
+                                        <geom name="finger_C_sub_link_4" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                        <body name="finger_C_sub_bolt_link_3" pos="0.0088882 0 0.039" gravcomp="0">
+                                          <inertial pos="0 -0.000432266 0" quat="0.707107 0.707107 0 0" mass="0.00097221" diaginertia="2.36098e-08 2.36098e-08 1.30928e-09" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_bolt_link_3" />
+                                          <geom name="finger_C_sub_bolt_link_3" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                        </body>
+                                      </body>
+                                    </body>
+                                    <body name="finger_C_sub_link_5" pos="-0.05544 0 0.048" gravcomp="0">
+                                      <inertial pos="-0.00242713 1.14516e-05 0.0140638" quat="0.992655 -0.0158125 -0.119935 -0.00133716" mass="0.00309025" diaginertia="3.88454e-07 3.49173e-07 4.90744e-08" />
+                                      <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_5" />
+                                      
+                                      <body name="finger_C_sub_link_6" pos="-0.0088882 0 0.039" gravcomp="0">
+                                        <inertial pos="0.00462123 -0.000165936 0.020669" quat="0.991082 -0.00943203 0.119963 0.0572442" mass="0.00337282" diaginertia="2.84085e-07 2.79833e-07 2.64381e-08" />
+                                        <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_6" />
+                                        <geom name="finger_C_sub_rot_joint_6" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+                                        <body name="finger_C_sub_link_7" pos="0 0 0" gravcomp="0">
+
+                                          <inertial pos="0.00544753 -1.27677e-06 0.0239029" quat="0.702673 0.0790569 0.0790569 0.702673" mass="0.000822731" diaginertia="1.07857e-07 1.0742e-07 1.39943e-09" />
+                                          <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_7" />
+                                          <geom name="finger_C_sub_rot_joint_7" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                          <body name="finger_C_sub_bolt_link_4" pos="0.0088882 0 0.039" gravcomp="0">
+                                            <inertial pos="0 0 0" quat="0.707107 0.707107 0 0" mass="0.000145243" diaginertia="4.4917e-10 4.4917e-10 7.05984e-11" />
+                                            <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_bolt_link_4" />
+                                            <geom name="finger_C_sub_rot_joint_4" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                          </body>
+                                        </body>
+                                      </body>
+                                    </body>
+                                    <body name="finger_C_sub_link_8" pos="-0.07444 0 0.048" gravcomp="0">
+                                      <inertial pos="0.00533102 -0.000142065 0.0174796" quat="0.985881 0 0.167449 0" mass="0.00637668" diaginertia="2.19351e-06 2.03559e-06 2.11761e-07" />
+                                      <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_8" />
+                                      <geom name="finger_C_sub_rot_joint_8" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                      <body name="finger_C_sub_link_9" pos="0.021289 0 0.060355" gravcomp="0">
+                                        <inertial pos="0.00606465 0 0.00603524" quat="0 0.383637 0 0.923484" mass="0.00411218" diaginertia="1.6049e-07 1.52769e-07 2.43365e-08" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_9" />
+                                        <geom name="finger_C_sub_rot_joint_9" type="sphere" size="0.0067" pos="0.000 0.0 0.000" contype="1" conaffinity="1" group="2" mass="0" rgba="0 1 0 0.3" />
+
+                                      </body>
+                                      <body name="finger_C_sub_link_10" pos="0.015468 0 0.043852" gravcomp="0">
+                                        <inertial pos="0.0052682 8.77097e-05 0.00964477" quat="0.980684 0 0.195597 0" mass="0.00419716" diaginertia="4.44826e-07 4.44655e-07 2.68863e-08" />
+                                        <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_10" />
+                                        
+
+                                        <body name="finger_C_sub_link_11" pos="0.015012 0 0.033157" gravcomp="0">
+                                          <inertial pos="0 -0.000463302 0" quat="0.707107 0.707107 0 0" mass="0.0014246" diaginertia="7.47232e-08 7.47232e-08 1.81821e-09" />
+                                          <geom class="visual" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_11" />
+                                          
+
+                                          <body name="finger_C_sub_link_12" pos="0 0 0" gravcomp="0">
+                                            <inertial pos="0.00593334 4.05384e-05 0.0113249" quat="0.664864 0.240741 0.240741 0.664864" mass="0.0058665" diaginertia="5.3938e-07 4.93196e-07 1.99831e-07" />
+                                            <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_12" />
+                                            <site name="finger3_site" type="sphere" pos="0.012 0.0 0.02" size="0.005" rgba="1 0 0 1" group="0" />
+                                            <geom name="gripper_pad_3" class="fingertip_pad_collision_1" />
+                                          </body>
+                                        </body>
+                                      </body>
+                                    </body>
+                                  </body>
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+
+    <!-- object freed to be grasped (judo-style): free body on the floor.
+         contype/conaffinity=1 -> collides with the fingertip pads (group 1) and floor. -->
+    <body name="sugar_box" pos="0.5 0 0.088">
+      <freejoint name="box_free"/>
+      <geom name="sugar_box_geom" type="box" size="0.0225 0.045 0.0875" mass="0.5"
+            rgba="0.9 0.75 0.1 1" contype="1" conaffinity="1"/>
+      <site name="object_site" pos="0 0 0" size="0.008" rgba="0.9 0.75 0.1 1" group="0"/>
+    </body>
+  </worldbody>
+
+  
+  <contact>
+    <exclude name="finger_1" body1="hand" body2="base_finger_A_link" />
+    <exclude name="finger_2" body1="hand" body2="finger_B_link" />
+    <exclude name="finger_3" body1="hand" body2="finger_B_rot_link" />
+    <exclude name="finger_4" body1="hand" body2="finger_C_link" />
+    <exclude name="finger_5" body1="hand" body2="finger_C_rot_link" />
+    <exclude name="finger_6" body1="base_finger_A_link" body2="finger_B_link" />
+    <exclude name="finger_7" body1="base_finger_A_link" body2="finger_B_rot_link" />
+    <exclude name="finger_8" body1="base_finger_A_link" body2="finger_C_link" />
+    <exclude name="finger_9" body1="base_finger_A_link" body2="finger_C_rot_link" />
+    <exclude name="finger_10" body1="finger_B_link" body2="finger_B_rot_link" />
+    <exclude name="finger_11" body1="finger_B_link" body2="finger_C_link" />
+    <exclude name="finger_12" body1="finger_B_link" body2="finger_C_rot_link" />
+    <exclude name="finger_13" body1="finger_C_link" body2="finger_B_rot_link" />
+    <exclude name="finger_14" body1="finger_C_link" body2="finger_C_rot_link" />
+    <exclude name="finger_15" body1="finger_B_rot_link" body2="finger_C_rot_link" />
+
+    <exclude name="finger_A_1" body1="finger_A_sub_link_1" body2="finger_A_sub_link_4" />
+    <exclude name="finger_A_2" body1="finger_A_sub_link_1" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_3" body1="finger_A_sub_link_4" body2="finger_A_sub_link_6" />
+    <exclude name="finger_A_4" body1="finger_A_sub_link_4" body2="finger_A_sub_link_7" />
+    <exclude name="finger_A_5" body1="finger_A_sub_link_4" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_6" body1="finger_A_sub_link_4" body2="finger_A_sub_link_12" />
+    <exclude name="finger_A_7" body1="finger_A_sub_link_6" body2="finger_A_sub_link_7" />
+    <exclude name="finger_A_8" body1="finger_A_sub_link_6" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_9" body1="finger_A_sub_link_6" body2="finger_A_sub_link_12" />
+    <exclude name="finger_A_10" body1="finger_A_sub_link_7" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_11" body1="finger_A_sub_link_7" body2="finger_A_sub_link_12" />
+
+    <exclude name="finger_B_1" body1="finger_B_sub_link_1" body2="finger_B_sub_link_4" />
+    <exclude name="finger_B_2" body1="finger_B_sub_link_1" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_3" body1="finger_B_sub_link_4" body2="finger_B_sub_link_6" />
+    <exclude name="finger_B_4" body1="finger_B_sub_link_4" body2="finger_B_sub_link_7" />
+    <exclude name="finger_B_5" body1="finger_B_sub_link_4" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_6" body1="finger_B_sub_link_4" body2="finger_B_sub_link_12" />
+    <exclude name="finger_B_7" body1="finger_B_sub_link_6" body2="finger_B_sub_link_7" />
+    <exclude name="finger_B_8" body1="finger_B_sub_link_6" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_9" body1="finger_B_sub_link_6" body2="finger_B_sub_link_12" />
+    <exclude name="finger_B_10" body1="finger_B_sub_link_7" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_11" body1="finger_B_sub_link_7" body2="finger_B_sub_link_12" />
+
+    <exclude name="finger_C_1" body1="finger_C_sub_link_1" body2="finger_C_sub_link_4" />
+    <exclude name="finger_C_2" body1="finger_C_sub_link_1" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_3" body1="finger_C_sub_link_4" body2="finger_C_sub_link_6" />
+    <exclude name="finger_C_4" body1="finger_C_sub_link_4" body2="finger_C_sub_link_7" />
+    <exclude name="finger_C_5" body1="finger_C_sub_link_4" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_6" body1="finger_C_sub_link_4" body2="finger_C_sub_link_12" />
+    <exclude name="finger_C_7" body1="finger_C_sub_link_6" body2="finger_C_sub_link_7" />
+    <exclude name="finger_C_8" body1="finger_C_sub_link_6" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_9" body1="finger_C_sub_link_6" body2="finger_C_sub_link_12" />
+    <exclude name="finger_C_10" body1="finger_C_sub_link_7" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_11" body1="finger_C_sub_link_7" body2="finger_C_sub_link_12" />
+  </contact>
+
+  <equality>
+    <!-- finger B and C slides slaved 1:1 to A -> single driven grasp DOF (grab_motor on A). -->
+    <joint name="finger_slide_1" joint1="finger_A_slide_joint" joint2="finger_B_slide_joint" polycoef="0 1 0 0 0" solref="0.002 1"/>
+    <joint name="finger_slide_2" joint1="finger_A_slide_joint" joint2="finger_C_slide_joint" polycoef="0 1 0 0 0" solref="0.002 1"/>
+  </equality>
+
+  <actuator>
+    <motor name="actuator1" joint="fr3_joint1" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator2" joint="fr3_joint2" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator3" joint="fr3_joint3" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator4" joint="fr3_joint4" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator5" joint="fr3_joint5" ctrllimited="true" ctrlrange="-12.0 12.0" />
+    <motor name="actuator6" joint="fr3_joint6" ctrllimited="true" ctrlrange="-12.0 12.0" />
+    <motor name="actuator7" joint="fr3_joint7" ctrllimited="true" ctrlrange="-12.0 12.0" />
+
+    <!-- gripper grasp actuator (drives finger_A slide; B/C follow via equality). judo gpu_grab 상당.
+         kp high enough that the closing force saturates forcerange -> grip force = 10N
+         (real gripper's set grasp force). kv damps the fast slide. -->
+    <position name="grab_motor" joint="finger_A_slide_joint" kp="1000" kv="40" ctrllimited="true" ctrlrange="-0.1 0.1" forcerange="-10 10"/>
+    </actuator>
+</mujoco>

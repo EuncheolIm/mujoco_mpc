@@ -30,6 +30,7 @@
 #include "mjpc/planners/PriorMPPI/planner.h"
 #include "mjpc/planners/MPOPI/planner.h"
 #include "mjpc/planners/FlowMPPI/planner.h"
+#include "mjpc/planners/FlowMPPIRpy/planner.h"
 #include "mjpc/planners/FMOnly/planner.h"
 #include "mjpc/planners/RLMPPI/planner.h"
 #include "mjpc/planners/RLOnly/planner.h"
@@ -49,7 +50,8 @@ const char kPlannerNames[] =
     "FMOnly\n"
     "RLMPPI\n"
     "RLOnly\n"
-    "PriorMPPI";
+    "PriorMPPI\n"
+    "FlowMPPIRpy";
 
 // load all available planners
 std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
@@ -71,6 +73,7 @@ std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
   planners.emplace_back(new mjpc::RLMPPIPlanner);
   planners.emplace_back(new mjpc::RLOnlyPlanner);
   planners.emplace_back(new mjpc::PriorMPPIPlanner);  // index 13
+  planners.emplace_back(new mjpc::FlowMPPIRpyPlanner);  // index 14 (FM goal=pos+rpy)
   return planners;
 }
 

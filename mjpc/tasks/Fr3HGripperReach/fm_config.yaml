@@ -1,0 +1,21 @@
+# ==========================================================================
+# Fr3HGripperReach — FlowMPPIRpy (planner 14) with the FM prior OFF.
+# Empty fm_checkpoint -> guide not loaded, alpha=0, fm_frac=0 -> planner 14 runs
+# as VANILLA MPPI over nu=8 (arm7 + grab). Keeps DC-noise / lambda / per-joint
+# knobs. Single-arm reach used to verify per-joint cost separation in mjpc.
+# ==========================================================================
+
+tasks_dir: mjpc/tasks
+autorun: true
+horizon: 0.4
+trajectories: 128
+knots: 16
+lambda: 1000
+
+fm_mode: cost
+fm_track_scale: 0.0
+fm_frac: 0.0
+
+guide_type: fm
+fm_checkpoint:
+fm_stats:

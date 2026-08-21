@@ -149,6 +149,12 @@ class MPPIPlanner : public RankedPlanner {
   // (units of N*m for torque control), globally scaled by sampling_exploration.
   // If the numeric is absent, falls back to the ctrlrange-scaled formulation.
   std::vector<double> noise_std_per_joint_;
+
+  // Optional per-knot noise ramp (judo fr3_pick: sigma grows linearly over the
+  // horizon so near-term actions stay gentle while far-term knots explore).
+  // factor_j = noise_ramp_ * (j+1)/num_knots. 0 (default) = no ramp (constant).
+  // Numeric "sampling_noise_ramp".
+  double noise_ramp_ = 0.0;
   double sigma_scale_ = 1.0;  // MJPC_SIGMA_SCALE: multiplies sampling std (sigma sweep)
 
   // If true, sample one DC offset per (rollout, joint) and broadcast it to

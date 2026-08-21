@@ -1,0 +1,233 @@
+<mujoco model="Fr3HGripperPot">
+  <size memory="100M" nuserdata="5"/>
+
+  <custom>
+    <!-- PLANNER 9 (FlowMPPI), not 14: the per-arm softmax and the per-group
+         adaptive sigma this task depends on live in FlowMPPI/planner.cc. -->
+    <numeric name="agent_planner" data="9"/>
+    <numeric name="agent_horizon" data="0.4"/>
+    <numeric name="agent_timestep" data="0.03"/>   <!-- replan cost must stay well under dt_mppi -->
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="32"/>   <!-- fm_config.yaml also sets 32; keep them equal -->
+    <numeric name="sampling_spline_points" data="16"/>
+    <numeric name="sampling_representation" data="0"/>
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>
+    <numeric name="sampling_dc_noise" data="1"/>          <!-- DC noise = stable (per-knot diverges) -->
+    <!-- nu=16: (arm7 + grab_motor) x2. Unlike the dual REACH task the gripper
+         channels are SAMPLED here - the grasp has to be found by MPPI, not
+         scripted. std 0.5, NOT Carry's 0.05: the knot noise is scaled by
+         0.5 * ctrlrange width and the gripper's range is 0.2, so 0.05 explores
+         only +-0.005 of a 0.05 stroke and a rollout can never try closing.
+         Sweep it with MJPC_STD_GRIP. -->
+    <numeric name="sampling_std_per_joint" size="16" data="1 1 1 1 0.5 0.5 0.5 0  1 1 1 1 0.5 0.5 0.5 0"/>
+    <!-- PER-ARM softmax: control channel -> arm group, user TERM -> arm group.
+         Actuators are l_actuator1..7, l_grab, r_actuator1..7, r_grab.
+         THREE groups: 0 = left arm joints, 1 = right arm joints, 2 = BOTH gripper
+         channels. The grippers get their own group because with one shared cost
+         the closing incentive is always dodgeable by the ARM (it can delete the
+         penalty by leaving the gate or breaking contact), and holding it below
+         the position term's gradient (~1e4) to stop that buries it under the
+         cost spread the arm channels' 87 Nm torque noise produces (~4e4). Both
+         failure modes were measured: the arms parked 25-30 mm outside the gate,
+         and later drove 33 mm PAST the handle. Grouping changes only credit
+         assignment - every rollout still simulates arms and grippers together,
+         so the gripper dof is still available for escaping contact, and the arm
+         still sees the CONSEQUENCES of gripping through the shared pot terms.
+         21 terms: 9 per arm (2 of them the gripper terms -> group 2), then the
+         3 SHARED ones (pot pos, pot ori, collision). -->
+    <numeric name="perarm_groups" data="2"/>   <!-- 3 (gripper in its own group) killed the closing signal: see fr3.cc -->
+    <numeric name="perarm_ctrl" size="16" data="0 0 0 0 0 0 0 0  1 1 1 1 1 1 1 1"/>
+    <numeric name="perarm_term" size="21" data="0 0 0 0 0 0 0 0 0  1 1 1 1 1 1 1 1 1  -1 -1 -1"/>
+    <numeric name="perarm_res_off" size="2" data="0 43"/>
+    <!-- Adaptive sigma OFF for now, as in the single-arm Carry task: its premise
+         (the pose error goes to zero and stays there) does not hold while the
+         object still has to be moved. Params kept so it can be switched on with
+         MJPC_SIGMA_ADAPT=1 once the carry works. -->
+    <numeric name="sampling_sigma_adapt" data="0"/>
+    <numeric name="sampling_sigma_adapt_min" data="0.10"/>
+    <numeric name="sampling_sigma_adapt_decay" data="0.97"/>
+    <numeric name="sampling_sigma_adapt_thr" data="0.010"/>
+    <numeric name="sampling_sigma_adapt_thr_ori" data="0.017"/>
+    <numeric name="sampling_sigma_adapt_hyst" data="3"/>
+    <numeric name="sampling_sigma_adapt_grow" data="1000"/>
+    <numeric name="sampling_sigma_adapt_res_dim" data="6"/>
+    <!-- Carrot waypoint for the pot, written every step by TransitionLocked and
+         read by the residual as parameters[0..2]. Each residual_* numeric
+         contributes exactly ONE parameter, in declaration order, so these three
+         must stay adjacent and in x,y,z order. -->
+    <numeric name="residual_pot_wp_x" data="0"/>
+    <numeric name="residual_pot_wp_y" data="0"/>
+    <numeric name="residual_pot_wp_z" data="0"/>
+    <!-- Gripper gates, also written every step by TransitionLocked from the REAL
+         state (parameters[3] = left, [4] = right; 1 = the bar is in that jaw).
+         They must NOT be evaluated per rollout: the gate is a function of the ARM
+         state, so inside a rollout it rewards the gripper for whatever the arm
+         happened to sample, and the gripper then opens and closes on someone
+         else's luck (measured: the pot was knocked 10-12 deg in every seed).
+         Evaluated once per step, the same value applies to all rollouts, and the
+         gripper group's cost depends only on the gripper's own action. -->
+    <numeric name="residual_pot_w" data="0"/>
+    <!-- LIFT phase hand targets, parameters[4..6] = left, [7..9] = right.
+         Latched in WORLD coordinates the moment the grasp is firm, then ramped
+         upward. They must be world poses, not handle-relative ones: the handle
+         moves with the pot, so "z above the handle" would pull the hand out of
+         its own grip. Tracking a latched world pose is what the PD check did when
+         the pot actually rose 90 mm. -->
+    <numeric name="residual_lift_lx" data="0"/>
+    <numeric name="residual_lift_ly" data="0"/>
+    <numeric name="residual_lift_lz" data="0"/>
+    <numeric name="residual_lift_rx" data="0"/>
+    <numeric name="residual_lift_ry" data="0"/>
+    <numeric name="residual_lift_rz" data="0"/>
+    <!-- "this jaw is still too far to close", parameters[10] = left, [11] = right,
+         computed once per step from the REAL state with hysteresis. The gripper
+         terms are built from these instead of from the rollout's own arm state:
+         that is what lets the gripper live in its own softmax group without being
+         credited for the arm's luck, and the hysteresis is what stops the jaw
+         chattering open/closed at the deadband boundary. -->
+    <numeric name="residual_far_l" data="1"/>
+    <numeric name="residual_far_r" data="1"/>
+    <!-- Phase-dependent sampling sigma, keyed on residual_pot_w (parameter 3):
+         before the grasp is firm the arms need loud torque noise to find the
+         approach and the gripper needs the full stroke to try closing; once the
+         pot is held, both want to be quiet so the coordinated lift is not
+         drowned out. Measured: std 1.0 closes but never lifts, std 0.3 lifts-
+         capable but never closes. -->
+    <!-- perarm_phase_src (collapse the per-arm softmax while carrying) is OFF.
+         It does fix the one-sided lift - with it the arms lift together - but it
+         costs the grasp: firm two-arm grasps fell from 4/4 to 2/4 because a single
+         softmax cannot credit the per-arm micro-corrections that HOLD the bars.
+         Re-enable with <numeric name="perarm_phase_src" data="3"/> to reproduce.
+-->
+    <!-- Blend the shared softmax into the per-arm one WHILE CARRYING (scaled by
+         parameter 3, the firm-grasp ramp): per-arm credit holds the bars, shared
+         credit makes both arms lift together, and the update is linear in the
+         weights so the mix is valid. -->
+    <numeric name="perarm_shared_blend" data="0"/>
+    <numeric name="perarm_shared_blend_src" data="-1"/>
+    <numeric name="sigma_phase_src" data="-1"/>
+    <numeric name="sigma_phase_arm" data="0.3"/>
+    <numeric name="sigma_phase_grip" data="0.1"/>
+    <!-- binary gripper OFF: measured worse than sampled torque on the Carry task -->
+    <!-- REACH-ONLY MODE. pot_phase=0 stops TransitionLocked publishing the carrot,
+         the firm-grasp signal, the lift targets and the far flags, so the residual
+         has exactly one job: put each hand on its handle grasp frame. All the
+         grip/pot cost weights above are 0 and the gripper is not sampled. Set
+         pot_phase=1 and restore those weights to get the carry task back. -->
+    <numeric name="pot_phase" data="0"/>
+    <numeric name="gripper_binary" data="0"/>
+  </custom>
+
+  <statistic extent="1.2" center="0.4 0 0.4"/>
+  <visual>
+    <global azimuth="150" elevation="-20"/>
+    <scale framelength="0.3" framewidth="0.03"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- WHERE THE POT SHOULD GO (mocap 0, draggable). The arms have no mocap
+         targets of their own any more: each hand's target is a site ON the pot,
+         so the reach servo tracks the object. -->
+    <body name="pot_target" mocap="true" pos="0.55 0 0.32" quat="0.7071068 0 0 0.7071068">
+      <geom name="pot_target_ghost" type="mesh" mesh="pot_mesh" contype="0" conaffinity="0"
+            group="2" rgba="0.3 0.9 0.5 0.25"/>
+      <geom name="pot_target_axis_x" type="cylinder" fromto="0 0 0  0.12 0 0" size="0.005"
+            contype="0" conaffinity="0" group="2" rgba="1 0.2 0.2 0.9"/>
+      <geom name="pot_target_axis_y" type="cylinder" fromto="0 0 0  0 0.12 0" size="0.005"
+            contype="0" conaffinity="0" group="2" rgba="0.2 1 0.2 0.9"/>
+      <geom name="pot_target_axis_z" type="cylinder" fromto="0 0 0  0 0 0.12" size="0.005"
+            contype="0" conaffinity="0" group="2" rgba="0.3 0.5 1 0.9"/>
+      <site name="pot_target_site" pos="0 0 0" size="0.012" rgba="0.3 0.9 0.5 1" group="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- user = "norm_type weight w_lower w_upper p_smooth". Order MUST match
+         Residual(). 21 terms / 93 dims:
+           L 43 = pos3 ori3 grip_ready1 grip_hold1 cent7 nsvel7 vel7 limit7 ureg7
+           R 43 = same
+           shared 7 = Pot_pos3 Pot_ori3 collision1
+         Each arm's block starts with (pos3, ori3) so perarm_res_off 0/43 lets the
+         per-group adaptive sigma read each arm's own pose error. -->
+    <!-- Measured weight choices (pot_eval, 2-4 seeds each):
+           grip_hold 1e5   penalises an OPEN jaw, ungated (see fr3.cc): it must be
+                           SMALLER than grip_ready so the aperture parks at the
+                           pre-grasp value until the bar is in the jaw, and large
+                           enough to be heard over the arm channels' torque noise
+           cent 2 / limit 1e5  at 20 / 5e6 they fight the grasp pose: the jaws sat
+                          41-82 mm off the bars, at these values 7-13 mm
+         Everything else is inherited from the settled dual REACH task. -->
+    <user name="L_pos"        dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="L_ori"        dim="3" user="2 600000  0 6000000  0.01"/>
+    <user name="L_grip_ready" dim="1" user="2 0       0 5000000  0.01"/>
+    <user name="L_grip_hold"  dim="1" user="2 0       0 5000000  0.01"/>
+    <user name="L_cent"       dim="7" user="2 2       0 5000     1"/>
+    <user name="L_nsvel"      dim="7" user="2 5000    0 5000000  0.01"/>
+    <user name="L_vel"        dim="7" user="2 500     0 5000     0.01"/>
+    <user name="L_limit"      dim="7" user="2 100000  0 50000000 0.01"/>
+    <user name="L_ureg"       dim="7" user="2 0.01    0 1        0.01"/>
+    <user name="R_pos"        dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="R_ori"        dim="3" user="2 600000  0 6000000  0.01"/>
+    <user name="R_grip_ready" dim="1" user="2 0       0 5000000  0.01"/>
+    <user name="R_grip_hold"  dim="1" user="2 0       0 5000000  0.01"/>
+    <user name="R_cent"       dim="7" user="2 2       0 5000     1"/>
+    <user name="R_nsvel"      dim="7" user="2 5000    0 5000000  0.01"/>
+    <user name="R_vel"        dim="7" user="2 500     0 5000     0.01"/>
+    <user name="R_limit"      dim="7" user="2 100000  0 50000000 0.01"/>
+    <user name="R_ureg"       dim="7" user="2 0.01    0 1        0.01"/>
+    <!-- 3e6: at 1e6 the lift signal is ~1e3 per replan against a cost spread of
+         ~4e4 and nothing moves; at 1e7 the pot does reach the goal (5.7 mm at
+         best) but the arms yank it over (112 deg, airborne). -->
+    <user name="Pot_pos"      dim="3" user="2 0       0 50000000 0.01"/>
+    <user name="Pot_ori"      dim="3" user="2 0       0 5000000  0.01"/>
+    <user name="collision"    dim="1" user="2 500000  0 5000000  0.01"/>
+
+    <!-- hands: gripper_site (jaw centre). In THIS model hand_site and
+         gripper_site coincide, so either is the grasp point. -->
+    <framepos  name="l_grip"          objtype="site" objname="l_gripper_site"/>
+    <framequat name="l_grip_quat"     objtype="site" objname="l_gripper_site"/>
+    <framepos  name="r_grip"          objtype="site" objname="r_gripper_site"/>
+    <framequat name="r_grip_quat"     objtype="site" objname="r_gripper_site"/>
+    <!-- grasp frames, side variant (default) and top variant (fallback) -->
+    <framepos  name="l_grasp"         objtype="site" objname="pot_grasp_l"/>
+    <framequat name="l_grasp_quat"    objtype="site" objname="pot_grasp_l"/>
+    <framepos  name="r_grasp"         objtype="site" objname="pot_grasp_r"/>
+    <framequat name="r_grasp_quat"    objtype="site" objname="pot_grasp_r"/>
+    <framepos  name="l_grasp_top"      objtype="site" objname="pot_grasp_l_top"/>
+    <framequat name="l_grasp_top_quat" objtype="site" objname="pot_grasp_l_top"/>
+    <framepos  name="r_grasp_top"      objtype="site" objname="pot_grasp_r_top"/>
+    <framequat name="r_grasp_top_quat" objtype="site" objname="pot_grasp_r_top"/>
+    <!-- object and its goal pose -->
+    <framepos  name="pot"             objtype="site" objname="pot_site"/>
+    <framequat name="pot_quat"        objtype="site" objname="pot_site"/>
+    <framepos  name="pot_tgt"         objtype="site" objname="pot_target_site"/>
+    <framequat name="pot_tgt_quat"    objtype="site" objname="pot_target_site"/>
+  </sensor>
+
+  <keyframe>
+    <!-- l_arm(7) l_slides(3) r_arm(7) r_slides(3)  pot free(xyz + wxyz)
+         PRE-GRASP start: both hands 80 mm outboard of their handle along the
+         approach axis, already at the grasp orientation, jaws open. Solved by
+         IK on the grasp frames (residual 0.00 mm / 0.00 deg, joint margins
+         0.54 / 0.47 rad). From the old arms-down home the LEFT arm had to
+         reconfigure ~109 deg at joint 1 to reach the only roll whose single
+         finger fits under the bar, and it never got there (jaws parked
+         22-74 mm out). Global reconfiguration is not what this task is
+         about; the final approach, the close and the lift are. -->
+    <key name="home" qpos="0.0719  0.1969  0.3558  -1.8835  -0.8348  1.5789  -0.9086  0 0 0  0.0989  0.2569  -0.5510  -1.8220  0.8849  1.5292  0.8981  0 0 0  0.55 0 0.12  0.7071068 0 0 0.7071068"/>
+  </keyframe>
+
+  <include file="fr3_H_gripper_dual.xml"/>
+  <!-- pot AFTER the arms: its free joint is then the last 7 qpos entries. -->
+  <include file="pot.xml"/>
+</mujoco>

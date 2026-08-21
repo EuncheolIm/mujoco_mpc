@@ -1,0 +1,199 @@
+<mujoco model="Fr3HGripperCarry">
+  <!-- 62-DOF closed-loop H-gripper: bump memory / constraint limits. -->
+  <size memory="50M" nuserdata="5"/>
+
+  <custom>
+    <numeric name="agent_planner" data="14"/>          <!-- FlowMPPIRpy (FM goal=pos+rpy) -->
+    <!-- NOTE: this value is OVERRIDDEN at runtime. GetFMConfig() setenv's
+         MJPC_HORIZON from the loaded fm_config.yaml, which then overrides this.
+         The loaded fm_config defaults to tasks/Fr3/fm_config.yaml (horizon 0.05 ->
+         30cm real-time oscillation) UNLESS you launch with
+         MJPC_FM_CONFIG=.../Fr3HGripperCarry/fm_config.yaml (horizon 0.225 -> 2mm,
+         stable at 100% realtime). Keep this in sync (0.225) for clarity only. -->
+    <numeric name="agent_horizon" data="0.225"/>
+    <numeric name="agent_timestep" data="0.01"/>
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="32"/>
+    <numeric name="sampling_spline_points" data="30"/>
+    <numeric name="sampling_representation" data="0"/>   <!-- Zero-order (torque, dense) -->
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>
+    <numeric name="sampling_dc_noise" data="1"/>
+    <!-- nu=8: arm 7 (torque N*m) + grab_motor 1. gripper std 0.05 -> MPPI SAMPLES open/close
+         (DC noise: each rollout is ~all-open or ~all-close). Set to 0 to hand the gripper back
+         to the auto-close primitive (MJPC_GRIP_AUTO=1). -->
+    <numeric name="sampling_std_per_joint" size="8" data="2 2 2 2 1 1 1 0.05"/>
+    <!-- Adaptive sampling sigma (this task only; absent numeric = OFF elsewhere).
+         Task error for the gate is Object_tgt (object -> target) at residual
+         [37,40), NOT Reach_pos: Reach_pos/Reach_ori weights are 0 here and the
+         arm is driven by Hand_obj + Object_tgt. Orientation is not part of the
+         gate (thr_ori 0) because the grasp is position-only. -->
+    <!-- DISABLED (0). Ported from the Reach task, but the premise does not hold
+         here: in Reach the hand IS the controlled quantity, so "arrived => stop
+         exploring" is valid. In Carry the object pose is only indirectly
+         controlled -- the arm must keep supporting the object after it reaches the
+         target. Measured: object got to 0.6mm, the gate shrank sigma to 0.05, the
+         object then slipped past 30mm, sigma snapped back to 1.0, and the arm
+         oscillated back and forth. -->
+    <!-- GATED torque regularizer (cost_fn.cc CostControl): once the object is at
+         its target AND still gripped, u_reg is multiplied by this. Everything has
+         gravcomp="1" so holding still needs zero torque, but at weight 0.01
+         against terms of 1e6 nothing asked for it and the arm kept injecting the
+         noise average after arriving - the reported wobble. Unlike adaptive sigma
+         it does not shrink the exploration, so a slipping object can still be
+         recovered. Set to 0 to disable. -->
+    <!-- SINGLE vs MULTI target (see fr3.cc MultiTargetStep).
+           carry_multi 0 = shipped behaviour: object where the xml puts it, one
+                           fixed target, nothing respawns.
+           carry_multi 1 = object spawns at a random point in carry_spawn_area;
+                           each time it is delivered (within carry_success_tol of
+                           the target, gripper closed, for carry_success_dwell) it
+                           is teleported to a new random point, so the arm has to
+                           open, go back, re-grasp and deliver again.
+         Areas are "xmin xmax ymin ymax z". Override the mode without editing this
+         file with MJPC_CARRY_MULTI=1. -->
+    <numeric name="carry_multi" data="0"/>
+    <numeric name="carry_spawn_area" size="5" data="0.42 0.58 -0.18 0.18 0.088"/>
+    <numeric name="carry_tgt_random" data="0"/>
+    <numeric name="carry_tgt_area" size="5" data="0.37 0.53 -0.18 0.18 0.32"/>   <!-- shifted with the goal: -5cm x, -8cm z -->
+    <numeric name="carry_success_tol" data="0.005"/>   <!-- 5 mm -->
+    <numeric name="carry_success_dwell" data="0.3"/>
+    <numeric name="carry_ureg_hi" data="10000"/>   <!-- 3e4 lost at 6 seeds (1.50 vs 3.00 deliveries/90s); the 3-seed win was variance -->
+    <numeric name="carry_ureg_tol" data="0.040"/>   <!-- see cost_fn.cc: must be wider than the object's residual wander -->
+    <numeric name="sampling_sigma_adapt" data="0"/>
+    <numeric name="sampling_sigma_adapt_min" data="0.05"/>
+    <numeric name="sampling_sigma_adapt_decay" data="0.97"/>
+    <numeric name="sampling_sigma_adapt_thr" data="0.010"/>
+    <numeric name="sampling_sigma_adapt_thr_ori" data="0"/>
+    <numeric name="sampling_sigma_adapt_hyst" data="3"/>
+    <numeric name="sampling_sigma_adapt_grow" data="1000"/>
+    <numeric name="sampling_sigma_adapt_res_off" data="37"/>
+    <numeric name="sampling_sigma_adapt_res_dim" data="3"/>
+    <!-- Binary gripper command (this task only). The real arm only accepts an
+         OPEN or CLOSE command -- the PD lives in the gripper controller -- so the
+         planner must not optimise a continuous setpoint it cannot execute. With a
+         continuous channel MPPI settled on a half-open gripper that PUSHES the
+         object (measured: finger_q 0.0066, object flung at 0.34 m/s, never grasped).
+         close = 0.05 = the slide joint's closed limit (same value app.cc's
+         auto-grip primitive uses). -->
+    <!-- OFF. Binary open/close matches the real interface, but measured worse here
+         even WITH hysteresis: phase-1 ablation (4 seeds) gave close_events 16.5 vs
+         2.5 and hold_time 3.19s vs 4.45s against the continuous channel. The
+         nominal is a weighted average of rollouts that each drew open or close, so
+         it sits near the switching threshold and the command keeps flipping.
+         MJPC_GRIP_BINARY=1 to re-enable. -->
+    <numeric name="gripper_binary" data="0"/>
+    <numeric name="gripper_hyst_hi" data="0.7"/>
+    <numeric name="gripper_hyst_lo" data="0.3"/>
+    <numeric name="gripper_ctrl_idx" data="7"/>
+    <numeric name="gripper_open_cmd" data="0"/>
+    <numeric name="gripper_close_cmd" data="0.05"/>
+    <numeric name="gradient_spline_points" data="6"/>
+    <!-- FM cost-bias target (arm 7); default = home. Updated by planner UpdateFM. -->
+    <numeric name="q_fm_target" size="7" data="0 -0.6 0 -2.2 0 1.6 0.8"/>
+  </custom>
+
+  <statistic extent="0.8" center="0.3 0 0.4"/>
+  <visual>
+    <global azimuth="120" elevation="-20"/>
+    <scale framelength="0.3" framewidth="0.03"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <site name="world"/>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- table removed (judo-style free-space env). -->
+
+    <!-- draggable target (mocap 0). Identity quat, matching what TransitionLocked
+         writes: this marker is the OBJECT's goal pose, not a hand pose. -->
+    <body name="drag_target" mocap="true" pos="0.45 0 0.32" quat="1 0 0 0">
+      <!-- A translucent GHOST OF THE OBJECT rather than a sphere: same box half-
+           extents as sugar_box_geom (0.0225 0.045 0.0875), so where the box has to
+           end up - position AND orientation - is directly readable. -->
+      <geom name="drag_geom" type="box" size="0.0225 0.045 0.0875"
+            rgba="0.9 0.75 0.1 0.3" contype="0" conaffinity="0"/>
+      <site name="target_site" pos="0 0 0" size="0.012" rgba="0 1 0 1" group="0"/>
+      <!-- goal FRAME (x=red, y=green, z=blue). Object_ori drives the box toward
+           this marker's orientation, so rotating the marker in the GUI is only
+           meaningful if its axes are visible. -->
+      <site name="target_axis_x" type="capsule" fromto="0 0 0  0.08 0 0" size="0.005"
+            rgba="1 0.1 0.1 0.9" group="0"/>
+      <site name="target_axis_y" type="capsule" fromto="0 0 0  0 0.08 0" size="0.005"
+            rgba="0.1 1 0.1 0.9" group="0"/>
+      <site name="target_axis_z" type="capsule" fromto="0 0 0  0 0 0.08" size="0.005"
+            rgba="0.1 0.4 1 0.9" group="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- user = "norm_type weight w_lower w_upper p_smooth"; cost = weight*sum(res^2).
+         Order MUST match Residual() concat. Total user dim = 53.
+         carry-with-grasp (A+B2): Reach_pos DISABLED; the arm is driven by
+         Hand_obj (hover->descend approach) + Object_tgt (carry). Grip_ready
+         penalizes closing the gripper while far from the object (close-when-ready),
+         so MPPI's sampled open/close only closes at the grasp pose. -->
+    <user name="Reach_pos"         dim="3" user="2 0       0 5000000  0.01"/>
+    <!-- orientation DISABLED (weight 0): grasp on object POSITION only. Forcing a
+         gripper-down ori fails when the object has tipped into an awkward pose. -->
+    <user name="Reach_ori"         dim="3" user="2 0       0 500000   0.01"/>
+    <user name="joint_cent"        dim="7" user="2 20      0 5000     1"/>
+    <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>   <!-- NOT raised: 5000 blocks the approach too (grasp gap 17 -> 312mm). Slowing the transport needs a GATED term (active only once grasped), same pattern as the Reach task gated u_reg. -->
+    <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
+    <user name="FM_track"          dim="7" user="2 10000   0 50000    0.01"/>
+    <user name="Hand_obj"          dim="3" user="2 500000  0 5000000  0.01"/>
+    <user name="Object_tgt"        dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Grip_ready"        dim="1" user="2 500000  0 5000000  0.01"/>
+    <!-- closing axis vs object short axis (1 - |dot|). Without it the pads meet
+         the box's 90mm face and the close command jams (align was 0.21-0.37).
+         Object-relative, so a tipped box is still handled. -->
+    <user name="Grasp_align"       dim="2" user="2 300000  0 5000000  0.01"/>
+    <!-- velocity penalty gated on "gripper closed": slows the TRANSPORT (inertia
+         is what makes the object slip) without slowing the approach. Raising the
+         ungated joint_vel to 5000 instead pushed grasp gap 17 -> 312mm. -->
+    <user name="Carry_vel"         dim="7" user="2 20000   0 5000000  0.01"/>
+    <!-- keep the box upright: Object_tgt is position-only, so a slip that first
+         rotates the box inside the pads is invisible to the cost until it drops.
+         Goal = the draggable marker's orientation, so rotating it in the GUI
+         commands how the box is placed. -->
+    <user name="Object_ori"        dim="3" user="2 200000  0 5000000  0.01"/>
+    <!-- N(q)*qdot for the arm: damps the REDUNDANT motion only. Carry sets
+         Reach_pos/Reach_ori to 0, so the cost constrains the object pose and the
+         hand position but leaves the 7-dof arm's null space free to wander, which
+         is what it does once the object has arrived. Disable with
+         MJPC_CARRY_NSVEL_SCALE=0. -->
+    <!-- weight 0: measured no benefit on this task (obj->target got better on one
+         seed, worse on two, and the settle amplitude went 38.5 -> 60.4 deg on
+         another). Term kept so it can be re-enabled with a weight. -->
+    <user name="Nullspace_vel"     dim="7" user="2 0       0 5000000  0.01"/>
+    <!-- Velocity of the CARRIED OBJECT (3 linear + 3 angular*0.1), active only
+         while the gripper is closed. Weight 0 = off; this is the knob for the
+         object wobble that keeps the delivery dwell from completing. -->
+    <user name="Object_vel"        dim="6" user="2 50000   0 5000000  0.01"/>   <!-- inert until MJPC_CARRY_OBJVEL>0 -->
+
+    <framepos  name="hand"               objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient"        objtype="site" objname="hand_site"/>
+    <framequat name="hand_target_orient" objtype="site" objname="target_site"/>
+    <framepos  name="hand_target"        objtype="site" objname="target_site"/>
+    <!-- actual grasp point (between the finger pads), 145 mm ahead of hand_site.
+         Hand_obj / Grip_ready use this when present -- without it those costs
+         aim hand_site at the object and the fingers overshoot by 145 mm. -->
+    <framepos  name="gripper"            objtype="site" objname="gripper_site"/>
+    <framepos  name="object"             objtype="site" objname="object_site"/>
+    <framepos  name="trace0"             objtype="site" objname="hand_site"/>
+  </sensor>
+
+  <include file="fr3_H_gripper.xml"/>
+
+  <keyframe>
+    <!-- arm 7 + finger slides A/B/C 3 (open=0) + free box 7 (pos 0.5 0 0.088, quat 1 0 0 0). -->
+    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.5 0 0.088 1 0 0 0"/>
+  </keyframe>
+</mujoco>

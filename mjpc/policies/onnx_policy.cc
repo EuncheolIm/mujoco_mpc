@@ -1,3 +1,4 @@
+#include <random>
 #include "onnx_policy.h"
 #include <iostream>
 #include <fstream>
@@ -284,6 +285,35 @@ void ONNXPolicy::fmThreadLoop() {
     std::cout << "[FM Thread] Stopped" << std::endl;
 }
 
+// Synchronous counterpart of fmThreadLoop's body: normalize + predictFM inline.
+// Deterministic given the input (no thread scheduling), so a fixed sampler seed
+// + MJPC_THREADS=1 yields bit-reproducible runs.
+bool ONNXPolicy::predictChunkSync(const Eigen::VectorXd& state,
+                                  const Eigen::VectorXd& prev_state,
+                                  const Eigen::VectorXd& prev_action,
+                                  const Eigen::VectorXd& goal,
+                                  std::vector<Eigen::VectorXd>& chunk_out,
+                                  long x0_seed) {
+    if (!model_loaded_ || !is_flow_matching_) return false;
+    try {
+        std::vector<float> state_norm, prev_state_norm, prev_action_norm, goal_norm;
+        normalize(state, state_mean_, state_std_, state_norm);
+        if (drop_history_) {
+            prev_state_norm.assign(state_dim_, 0.0f);
+            prev_action_norm.assign(action_dim_, 0.0f);
+        } else {
+            normalize(prev_state, state_mean_, state_std_, prev_state_norm);
+            normalize(prev_action, action_mean_, action_std_, prev_action_norm);
+        }
+        normalize(goal, goal_mean_, goal_std_, goal_norm);
+        predictFM(state_norm, prev_state_norm, prev_action_norm, goal_norm, chunk_out, x0_seed);
+        return !chunk_out.empty();
+    } catch (const std::exception& e) {
+        std::cerr << "[ONNXPolicy] predictChunkSync error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 // ==================== Normalization ====================
 
 void ONNXPolicy::loadNormalizationStats(const std::string& stats_path) {
@@ -481,13 +511,23 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
                             const std::vector<float>& prev_state_norm,
                             const std::vector<float>& prev_action_norm,
                             const std::vector<float>& goal_norm,
-                            std::vector<Eigen::VectorXd>& action_chunk) {
+                            std::vector<Eigen::VectorXd>& action_chunk,
+                            long x0_seed) {
     auto t_start = std::chrono::high_resolution_clock::now();
 
     int flat_dim = horizon_ * action_dim_;
 
-    // Initialize x_0 = 0
-    std::fill(x_t_buffer_.begin(), x_t_buffer_.end(), 0.0f);
+    // Flow ODE initial condition. Flow matching transports p_0 = N(0, I) to the
+    // data distribution, so x_0 ~ N(0, I) yields a genuine sample from
+    // p_theta(U | x, goal); the diversity of the proposals lives here, not in any
+    // additive noise. x0_seed < 0 keeps the legacy deterministic x_0 = 0.
+    if (x0_seed >= 0) {
+        std::mt19937 g(static_cast<unsigned long>(x0_seed));
+        std::normal_distribution<float> nd(0.0f, 1.0f);
+        for (auto& v : x_t_buffer_) v = nd(g);
+    } else {
+        std::fill(x_t_buffer_.begin(), x_t_buffer_.end(), 0.0f);
+    }
 
     float dt = 1.0f / static_cast<float>(num_ode_steps_);
 

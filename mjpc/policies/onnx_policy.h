@@ -47,6 +47,21 @@ public:
     // Get full latest chunk (for temporal ensemble)
     bool getLatestChunk(std::vector<Eigen::VectorXd>& chunk_out);
 
+    // Synchronous, inline FM chunk prediction (no background thread). Mirrors
+    // exactly what fmThreadLoop() does (normalize + predictFM), but runs in the
+    // caller's thread so the result is deterministic given the input — used by
+    // the FlowMPPI planner under MJPC_FM_SYNC for reproducible offline sweeps.
+    // x0_seed >= 0 draws the flow ODE's initial condition x_0 ~ N(0, I) with that
+    // seed, i.e. an actual sample from p_theta(U | x, goal). x0_seed < 0 (default)
+    // keeps the legacy deterministic x_0 = 0, which returns a single mode-like
+    // trajectory. GPC-CEM needs the former to obtain N_Flow DISTINCT proposals.
+    bool predictChunkSync(const Eigen::VectorXd& state,
+                          const Eigen::VectorXd& prev_state,
+                          const Eigen::VectorXd& prev_action,
+                          const Eigen::VectorXd& goal,
+                          std::vector<Eigen::VectorXd>& chunk_out,
+                          long x0_seed = -1);
+
     bool isLoaded() const { return model_loaded_; }
     bool isFlowMatching() const { return is_flow_matching_; }
     int getHorizon() const { return horizon_; }
@@ -155,7 +170,8 @@ private:
                    const std::vector<float>& prev_state_norm,
                    const std::vector<float>& prev_action_norm,
                    const std::vector<float>& goal_norm,
-                   std::vector<Eigen::VectorXd>& action_chunk);
+                   std::vector<Eigen::VectorXd>& action_chunk,
+                   long x0_seed = -1);
 
     void loadNormalizationStats(const std::string& stats_path);
     void loadModelInfo(const std::string& model_dir);

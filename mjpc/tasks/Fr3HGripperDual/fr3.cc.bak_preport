@@ -1,0 +1,140 @@
+// Copyright 2022 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "mjpc/tasks/Fr3HGripperDual/fr3.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
+#include <mujoco/mujoco.h>
+#include "mjpc/task.h"
+#include "mjpc/utilities.h"
+
+namespace mjpc {
+
+std::string FR3HGripperDual::XmlPath() const {
+  return GetModelPath("Fr3HGripperDual/task.xml");
+}
+std::string FR3HGripperDual::Name() const { return "FR3_H_Gripper_Dual"; }
+
+void FR3HGripperDual::ResidualFn::Residual(const mjModel* model,
+                                           const mjData* data,
+                                           double* residual) const {
+  int c = 0;
+  double* lh = SensorByName(model, data, "l_hand");
+  double* lhq = SensorByName(model, data, "l_hand_quat");
+  double* rh = SensorByName(model, data, "r_hand");
+  double* rhq = SensorByName(model, data, "r_hand_quat");
+  double* lt = SensorByName(model, data, "l_target");
+  double* ltq = SensorByName(model, data, "l_target_quat");
+  double* rt = SensorByName(model, data, "r_target");
+  double* rtq = SensorByName(model, data, "r_target_quat");
+
+  auto ori_err = [](double* hq, double* tq, double* out) {
+    double tconj[4]; mju_negQuat(tconj, tq);
+    double eq[4]; mju_mulQuat(eq, tconj, hq);
+    mju_quat2Vel(out, eq, 1.0);
+  };
+
+  // 1. L position (3): l_hand -> l_target
+  for (int i = 0; i < 3; i++) residual[c++] = lh[i] - lt[i];
+  // 2. L orientation (3)
+  ori_err(lhq, ltq, residual + c); c += 3;
+  // 3. R position (3)
+  for (int i = 0; i < 3; i++) residual[c++] = rh[i] - rt[i];
+  // 4. R orientation (3)
+  ori_err(rhq, rtq, residual + c); c += 3;
+
+  // 5. joint centering (14): both arms
+  const char* pre[2] = {"l_fr3_joint", "r_fr3_joint"};
+  for (int a = 0; a < 2; a++) {
+    for (int j = 1; j <= 7; j++) {
+      char nm[32]; std::snprintf(nm, sizeof(nm), "%s%d", pre[a], j);
+      int jid = mj_name2id(model, mjOBJ_JOINT, nm);
+      int qa = model->jnt_qposadr[jid];
+      double lo = model->jnt_range[jid * 2], hi = model->jnt_range[jid * 2 + 1];
+      residual[c++] = data->qpos[qa] - 0.5 * (lo + hi);
+    }
+  }
+  // 6. joint velocity (14): both arms (smoothing)
+  for (int a = 0; a < 2; a++) {
+    for (int j = 1; j <= 7; j++) {
+      char nm[32]; std::snprintf(nm, sizeof(nm), "%s%d", pre[a], j);
+      int jid = mj_name2id(model, mjOBJ_JOINT, nm);
+      residual[c++] = data->qvel[model->jnt_dofadr[jid]];
+    }
+  }
+
+  // 7. collision avoidance (1): penalize actual cross-arm contacts (count + penetration).
+  double coll = 0.0;
+  for (int i = 0; i < data->ncon; i++) {
+    const mjContact* con = &data->contact[i];
+    const char* n1 = mj_id2name(model, mjOBJ_BODY, model->geom_bodyid[con->geom1]);
+    const char* n2 = mj_id2name(model, mjOBJ_BODY, model->geom_bodyid[con->geom2]);
+    if (!n1 || !n2) continue;
+    bool cross = n1[1] == '_' && n2[1] == '_' &&
+                 ((n1[0] == 'l' && n2[0] == 'r') || (n1[0] == 'r' && n2[0] == 'l'));
+    if (cross) coll += 1.0 + 100.0 * mju_max(0.0, -con->dist);
+  }
+  residual[c++] = coll;
+
+  // 8. joint-limit barrier (14): keep each arm joint MARGIN away from its range limits.
+  // Without this the redundant 7-DOF arm reaches the target with joints jammed at min/max
+  // (unusable). Hinge -> 0 when safely inside, grows near a limit. Env MJPC_JLIM_MARGIN.
+  static const double margin = []() {
+    if (const char* e = std::getenv("MJPC_JLIM_MARGIN"); e && e[0]) return std::atof(e);
+    return 0.25;
+  }();
+  for (int a = 0; a < 2; a++) {
+    for (int j = 1; j <= 7; j++) {
+      char nm[32]; std::snprintf(nm, sizeof(nm), "%s%d", pre[a], j);
+      int jid = mj_name2id(model, mjOBJ_JOINT, nm);
+      double q = data->qpos[model->jnt_qposadr[jid]];
+      double lo = model->jnt_range[jid * 2], hi = model->jnt_range[jid * 2 + 1];
+      residual[c++] = mju_max(0.0, q - (hi - margin)) + mju_max(0.0, (lo + margin) - q);
+    }
+  }
+
+  int user_sensor_dim = 0;
+  for (int i = 0; i < model->nsensor; i++) {
+    if (model->sensor_type[i] == mjSENS_USER) {
+      user_sensor_dim += model->sensor_dim[i];
+    }
+  }
+  if (user_sensor_dim != c) {
+    mju_error_i(
+        "mismatch between total user-sensor dimension "
+        "and actual length of residual %d",
+        c);
+  }
+}
+
+void FR3HGripperDual::TransitionLocked(mjModel* model, mjData* data) {
+  // Place both per-arm targets once; after that they are user-draggable.
+  if (goal_init_) return;
+  if (model->nmocap < 2) { goal_init_ = true; return; }
+
+  double lg[3] = {0.5, 0.3, 0.5}, rg[3] = {0.5, -0.3, 0.5};
+  data->mocap_pos[0] = lg[0]; data->mocap_pos[1] = lg[1]; data->mocap_pos[2] = lg[2];
+  data->mocap_pos[3] = rg[0]; data->mocap_pos[4] = rg[1]; data->mocap_pos[5] = rg[2];
+  // gripper-down (quat 0,1,0,0) for both
+  data->mocap_quat[0] = 0.0; data->mocap_quat[1] = 1.0; data->mocap_quat[2] = 0.0; data->mocap_quat[3] = 0.0;
+  data->mocap_quat[4] = 0.0; data->mocap_quat[5] = 1.0; data->mocap_quat[6] = 0.0; data->mocap_quat[7] = 0.0;
+
+  goal_init_ = true;
+}
+
+}  // namespace mjpc

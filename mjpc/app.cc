@@ -96,6 +96,95 @@ void controller(const mjModel* m, mjData* data) {
         data->ctrl, &sim->agent->state.state()[0],
         sim->agent->state.time());
   }
+  // --- gripper auto on/off primitive (Fr3HGripper*): OFF by default so MPPI's sampled
+  // gripper ctrl stands (MPPI chooses open/close). Set MJPC_GRIP_AUTO=1 to instead use the
+  // deterministic proximity primitive: auto-CLOSE grab_motor when the grasp point
+  // (gripper_site) nears the object, OPEN when far (hysteresis). Thresholds/close target
+  // overridable via MJPC_GRIP_CLOSE_D / MJPC_GRIP_OPEN_D / MJPC_GRIP_CLOSE_Q. ---
+  static const bool grip_auto = std::getenv("MJPC_GRIP_AUTO") != nullptr;
+  if (grip_auto) {
+    int grip_act = mj_name2id(m, mjOBJ_ACTUATOR, "grab_motor");
+    if (grip_act >= 0) {
+      int grip_site = mj_name2id(m, mjOBJ_SITE, "gripper_site");
+      int obj_body = mj_name2id(m, mjOBJ_BODY, "sugar_box");
+      static const double close_d = []() { const char* e = std::getenv("MJPC_GRIP_CLOSE_D"); return (e && e[0]) ? std::atof(e) : 0.06; }();
+      static const double open_d = []() { const char* e = std::getenv("MJPC_GRIP_OPEN_D"); return (e && e[0]) ? std::atof(e) : 0.10; }();
+      static const double close_q = []() { const char* e = std::getenv("MJPC_GRIP_CLOSE_Q"); return (e && e[0]) ? std::atof(e) : 0.05; }();
+      static bool closed = false;
+      if (grip_site >= 0 && obj_body >= 0) {
+        double dx = data->site_xpos[3 * grip_site + 0] - data->xpos[3 * obj_body + 0];
+        double dy = data->site_xpos[3 * grip_site + 1] - data->xpos[3 * obj_body + 1];
+        double dz = data->site_xpos[3 * grip_site + 2] - data->xpos[3 * obj_body + 2];
+        double dist = mju_sqrt(dx * dx + dy * dy + dz * dz);
+        if (!closed && dist < close_d) closed = true;
+        else if (closed && dist > open_d) closed = false;
+        data->ctrl[grip_act] = closed ? close_q : 0.0;
+      }
+    }
+  }
+  // Env-gated carry diagnostics (MJPC_CARRY_LOG=1): the headless harness cannot
+  // reproduce the GUI's async planner, so grasp/transport behaviour has to be
+  // measured HERE, in the loop the user actually runs. Prints at ~5 Hz:
+  //   gap   = grasp point (gripper_site) -> object          [mm]
+  //   obj   = object -> target                              [mm]
+  //   fq    = finger_A_slide_joint qpos (0 open .. 0.05 closed)
+  //   uq    = grab_motor command
+  //   |v|   = object linear speed                           [m/s]
+  //   ncon  = contacts involving the object
+  // Inert unless the env var is set.
+  static const bool carry_log = std::getenv("MJPC_CARRY_LOG") != nullptr;
+  if (carry_log) {
+    static double carry_last = -1e9;
+    if (data->time - carry_last > 0.2) {
+      carry_last = data->time;
+      int sg = mj_name2id(m, mjOBJ_SITE, "gripper_site");
+      int so = mj_name2id(m, mjOBJ_SITE, "object_site");
+      int st = mj_name2id(m, mjOBJ_SITE, "target_site");
+      int jb = mj_name2id(m, mjOBJ_JOINT, "finger_A_slide_joint");
+      int ab = mj_name2id(m, mjOBJ_ACTUATOR, "grab_motor");
+      int ob = mj_name2id(m, mjOBJ_BODY, "sugar_box");
+      auto dist = [&](int a, int b) {
+        if (a < 0 || b < 0) return -1.0;
+        double dx = data->site_xpos[3*a+0] - data->site_xpos[3*b+0];
+        double dy = data->site_xpos[3*a+1] - data->site_xpos[3*b+1];
+        double dz = data->site_xpos[3*a+2] - data->site_xpos[3*b+2];
+        return 1000.0 * mju_sqrt(dx*dx + dy*dy + dz*dz);
+      };
+      double vobj = -1.0;
+      int nco = 0;
+      if (ob >= 0) {
+        const double* v = data->cvel + 6 * ob;   // [ang(3), lin(3)]
+        vobj = mju_sqrt(v[3]*v[3] + v[4]*v[4] + v[5]*v[5]);
+        for (int i = 0; i < data->ncon; i++) {
+          int b1 = m->geom_bodyid[data->contact[i].geom1];
+          int b2 = m->geom_bodyid[data->contact[i].geom2];
+          if (b1 == ob || b2 == ob) nco++;
+        }
+      }
+      // Is the gripper's closing axis lined up with the object's SHORT axis?
+      // The pads close along hand-x; the box's short side (45mm, the only one that
+      // fits between the pads) is the object's local x. align = |dot| of those two
+      // world axes: 1.0 = can wrap the box, 0.0 = pads meet the 90mm face and jam.
+      // Reported together with which object axis is closest, so a tipped-over box
+      // is still interpretable.
+      double align = -1.0;
+      int hb = mj_name2id(m, mjOBJ_BODY, "hand");
+      if (hb >= 0 && ob >= 0) {
+        const double* Rh = data->xmat + 9 * hb;   // hand rotation
+        const double* Ro = data->xmat + 9 * ob;   // object rotation
+        double gx[3] = {Rh[0], Rh[3], Rh[6]};     // hand x = closing axis
+        double ox[3] = {Ro[0], Ro[3], Ro[6]};     // object x = short axis (45mm)
+        align = mju_abs(mju_dot3(gx, ox));
+      }
+      std::fprintf(stderr,
+                   "[CARRY] t=%6.2f  gap=%7.1fmm  obj=%7.1fmm  fq=%+.4f  "
+                   "uq=%+.4f  |v|=%5.3f m/s  ncon=%d  align=%.3f\n",
+                   data->time, dist(sg, so), dist(so, st),
+                   (jb >= 0) ? data->qpos[m->jnt_qposadr[jb]] : -1.0,
+                   (ab >= 0) ? data->ctrl[ab] : -1.0, vobj, nco, align);
+    }
+  }
+
   // Env-gated EE->target distance readout (MJPC_FR3_DIST_LOG) for FR3, so the GUI
   // can be compared against the headless ep/eth metric. ~2 Hz to stderr.
   static const bool fr3_dist = std::getenv("MJPC_FR3_DIST_LOG") != nullptr;
@@ -591,7 +680,14 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
   sim->agent->estimator_enabled = absl::GetFlag(FLAGS_estimator_enabled);
   sim->agent->Initialize(m);
   sim->agent->Allocate();
-  sim->agent->Reset();
+  // Seed the planner nominal with the home keyframe's ctrl (position actuators:
+  // nominal 0 => arm driven to the zero config => forward-stretch lunge at
+  // startup). Mirrors the task-reload path (see the home-keyframe block above).
+  if (home_id >= 0) {
+    sim->agent->Reset(d->ctrl);
+  } else {
+    sim->agent->Reset();
+  }
   sim->agent->PlotInitialize();
 
   sim->agent->plan_enabled = absl::GetFlag(FLAGS_planner_enabled);

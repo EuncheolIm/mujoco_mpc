@@ -92,6 +92,9 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
   // MPPI temperature (default if numeric absent).
   mppi_lambda_ = GetNumberOrDefault(1.0, model, "sampling_lambda");
 
+  // Optional per-knot noise ramp (0 = off/constant). See planner.h.
+  noise_ramp_ = GetNumberOrDefault(0.0, model, "sampling_noise_ramp");
+
   // DC-per-rollout noise: if 1, one Gaussian per (rollout, joint) broadcast
   // across all knots (reference tau-MPPI). If 0, each knot independent.
   noise_dc_per_rollout_ =
@@ -538,13 +541,21 @@ void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
       Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
     }
   } else {
-    // Independent Gaussian per knot.
+    // Independent Gaussian per knot, with an optional linear noise ramp over
+    // the horizon (judo fr3_pick: gentle near-term, exploratory far-term).
+    int num_nodes = 0;
+    for (const TimeSpline::Node& n : candidate_policy[i].plan) { (void)n; num_nodes++; }
+    int j = 0;
     for (const TimeSpline::Node& node : candidate_policy[i].plan) {
+      double ramp = (noise_ramp_ > 0.0 && num_nodes > 0)
+                        ? noise_ramp_ * static_cast<double>(j + 1) / num_nodes
+                        : 1.0;
       for (int k = 0; k < model->nu; k++) {
-        double noise = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
+        double noise = absl::Gaussian<double>(gen_, 0.0, sigma[k] * ramp);
         node.values()[k] += noise;
       }
       Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+      j++;
     }
   }
 

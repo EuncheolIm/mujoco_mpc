@@ -1,0 +1,42 @@
+# ==========================================================================
+# Fr3HGripper — flow-matching (adaLN) prior via FlowMPPIRpy (planner 14).
+# Motor (torque) actuators; planner adds qfrc_bias (gravity). Goal = pos+rpy
+# (6-D) is built inside FlowMPPIRpy. Prior follows the draggable `drag_target`.
+#
+#   MJPC_FM_MODE=cost  -> Proximal Prior Injection (CostFMTrack)   [default]
+#   MJPC_FM_MODE=wta   -> warm-start (PD+ID torque nominal)
+#   MJPC_TARGET_X/Y/Z  -> initial target (default 0.5 0 0.4)
+# ==========================================================================
+
+tasks_dir: mjpc/tasks
+autorun: true
+# planner NOT set here (avoid MJPC_PLANNER env override of the GUI dropdown);
+# default comes from task.xml <agent_planner> = 14 (FlowMPPIRpy).
+horizon: 0.225
+trajectories: 32
+knots: 30
+lambda: 1000
+
+fm_mode: cost
+fm_step_indexed: true
+fm_track_scale: 1.0
+fm_frac: 0.5
+
+# ---- guide: flow-matching adaLN (goal=pos+rpy 6-D, ODE) ----
+guide_type: fm
+fm_checkpoint: /home/kkomji/Euncheol/mujoco_mpc/mjpc/tasks/Fr3HGripper/checkpoints/flow_h_grip/flow_h_grip.onnx
+fm_stats:      /home/kkomji/Euncheol/mujoco_mpc/mjpc/tasks/Fr3HGripper/checkpoints/flow_h_grip/normalization_stats.npz
+fm_ode_steps: 20          # matches training sample() num_steps
+fm_chunk_dt: 0.02         # subsample 20 x sim dt 0.001
+fm_te_decay: 0.01
+fm_te_buffer: 10
+fm_chunk_advance: true
+no_temporal_ensemble: false
+lookahead: 0.0
+vel_ff: true
+
+# PD gains for the warm-start torque path (q_d -> tau = M*(kp e + kd edot)+bias).
+kp: 400.0
+kd: 40.0
+tau_max_big: 87.0
+tau_max_small: 12.0

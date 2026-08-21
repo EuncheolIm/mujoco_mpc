@@ -1,0 +1,102 @@
+<mujoco model="Fr3Pick">
+  <!-- Faithful port of SUMO/judo fr3_pick to mjpc. Table + 4cm cube grasped by a
+       Franka hand, lifted to pick_height and moved to a goal xy, then placed.
+       Model (geometry, kp, grasp_site, sensors) copied verbatim from judo's
+       fr3_pick; only the optimizer (mjpc MPPI) and the cost encoding are mjpc-side.
+       Reward mirrors fr3_pick.py: phased (LIFT/MOVE/PLACE/HOMING) + globals
+       (ee upright, gripper-open, qvel, hand-table non-collision). -->
+  <compiler angle="radian" meshdir="meshes/fr3"/>
+  <include file="assets.xml"/>              <!-- materials + fr3 meshes -->
+  <include file="params_and_default.xml"/>  <!-- option, defaults, equality, actuators, distance/ee_z/trace sensors -->
+
+  <size memory="30M"/>
+
+  <custom>
+    <!-- judo fr3_pick optimizer: MPPI, horizon 1.0, linear spline, K=64, sigma 0.06,
+         greedy (judo temp 0.002 -> small mjpc lambda). sigma_per_joint = judo sigma
+         (0.06 rad) on all 8 dofs (arm 7 + gripper). Tuned via eval. -->
+    <numeric name="agent_planner" data="0"/>
+    <numeric name="agent_horizon" data="1.0"/>
+    <numeric name="agent_timestep" data="0.004"/>
+    <numeric name="sampling_trajectories" data="64"/>
+    <numeric name="sampling_spline_points" data="4"/>
+    <numeric name="sampling_representation" data="1"/>   <!-- 1 = linear (judo uses linear) -->
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="4e-6"/>
+    <numeric name="sampling_std_per_joint" size="8" data="0.06 0.06 0.06 0.06 0.06 0.06 0.06 0.06"/>
+    <numeric name="sampling_noise_ramp" data="4.0"/>
+    <numeric name="gradient_spline_points" data="5"/>
+  </custom>
+
+  <statistic extent="1.2" center="0.5 0.15 0.2"/>
+  <visual>
+    <global azimuth="138" elevation="-22"/>
+    <scale framelength="0.25" framewidth="0.02"/>
+  </visual>
+
+  <worldbody>
+    <light pos="0.5 0 1.6" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+
+    <!-- table: top surface at z = 0 (judo fr3_pick) -->
+    <body name="table" pos="0 0 0" quat="1 0 0 0">
+      <geom name="table" type="box" size="0.75 1.25 0.01" pos="0.5 0 -0.01" rgba="0.8 0.8 0.8 1"/>
+    </body>
+
+    <!-- free-body object: 4cm cube on the table (freejoint placed by keyframe) -->
+    <body name="object" pos="0 0 0" quat="1 0 0 0">
+      <freejoint name="object_joint"/>
+      <geom name="box" type="box" size="0.02 0.02 0.02" pos="0 0 0" rgba="0.9 0.5 0.1 1"/>
+      <site name="object_site" pos="0 0 0" size="0.008" rgba="0.9 0.5 0.1 1" group="0"/>
+    </body>
+
+    <!-- draggable goal (xy target the object is moved to). z shown at pick_height. -->
+    <body name="goal" mocap="true" pos="0.6 0.4 0.3">
+      <geom name="goal_geom" type="sphere" size="0.02" rgba="0.2 0.9 0.3 0.3" contype="0" conaffinity="0"/>
+      <site name="goal_site" pos="0 0 0" size="0.01" rgba="0.2 0.9 0.3 1" group="0"/>
+    </body>
+
+    <body name="fr3" pos="0 0 0" quat="1 0 0 0">
+      <include file="fr3_body.xml"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- mjpc cost residual terms (order MUST match Residual()). Phase gates zero out
+         inactive terms in fr3.cc; weights here mirror fr3_pick.py judo weights.
+         norm type 2 (quadratic) => cost = weight * sum(residual^2). -->
+    <!-- phased -->
+    <user name="GraspLift"  dim="3" user="0 1.0  0 10  0.01"/>   <!-- LIFT: grasp_site->obj  (w_lift_close 1) -->
+    <user name="LiftHeight" dim="1" user="0 10.0 0 100 0.01"/>   <!-- LIFT: z_obj->pick_height (w_lift_height 10) -->
+    <user name="GraspMove"  dim="3" user="0 10.0 0 100 0.01"/>   <!-- MOVE: grasp_site->obj  (w_move_close 10) -->
+    <user name="GoalMove"   dim="2" user="0 1.0  0 10  0.01"/>   <!-- MOVE: obj_xy->goal     (w_move_goal 1) -->
+    <user name="GoalPlace"  dim="2" user="0 1.0  0 10  0.01"/>   <!-- PLACE: obj_xy->goal    (w_place_goal 1) -->
+    <user name="PlaceDown"  dim="1" user="0 1.0  0 10  0.01"/>   <!-- PLACE: obj z->table    (w_place_table 1) -->
+    <user name="HomeArm"    dim="7" user="0 1.0  0 10  0.01"/>   <!-- HOMING: arm->home -->
+    <!-- globals (always active) -->
+    <user name="Upright"    dim="3" user="0 0.25  0 2.5 0.01"/>  <!-- ee_z -> (0,0,-1)  (w_upright 0.25) -->
+    <user name="GripOpen"   dim="1" user="0 2.0   0 20  0.01"/>  <!-- gripper ctrl -> 0.04 open (w_open 2.0) -->
+    <user name="Qvel"       dim="9" user="0 0.005 0 0.05 0.01"/> <!-- arm+gripper qvel damp (w_qvel 0.005) -->
+    <user name="HandColl"   dim="2" user="0 0.1   0 1.0 0.01"/>  <!-- finger-table contact penalty (w_coll 0.1) -->
+
+    <!-- readout sensors (moved here from params_and_default so the user cost
+         sensors above stay first & sequential, as mjpc requires) -->
+    <distance   name="left_finger_obj"   cutoff="1.0" body1="left_finger"  body2="object"/>
+    <distance   name="right_finger_obj"  cutoff="1.0" body1="right_finger" body2="object"/>
+    <distance   name="left_finger_table" cutoff="1.0" body1="left_finger"  body2="table"/>
+    <distance   name="right_finger_table" cutoff="1.0" body1="right_finger" body2="table"/>
+    <distance   name="obj_table"         cutoff="1.0" body1="object"       body2="table"/>
+    <framezaxis name="ee_z"              objtype="body" objname="hand"/>
+    <framepos   name="trace_object"      objtype="body" objname="object"/>
+    <framepos   name="trace_grasp_site"  objtype="site" objname="grasp_site"/>
+  </sensor>
+
+  <keyframe>
+    <!-- qpos = object freejoint(7) + arm(7) + fingers(2). object 4cm cube on table
+         at (0.7,0,0.02); arm at judo QPOS_HOME; fingers open (0.04).
+         ctrl = arm home + gripper open, so the MPPI nominal holds the home pose
+         (position actuators: nominal 0 => lunge to zero config). -->
+    <key name="home"
+         qpos="0.7 0 0.02 1 0 0 0   0 -0.7854 0 -2.3562 0 1.5708 0.7854   0.04 0.04"
+         ctrl="0 -0.7854 0 -2.3562 0 1.5708 0.7854   0.04"/>
+  </keyframe>
+</mujoco>

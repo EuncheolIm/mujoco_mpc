@@ -45,6 +45,13 @@
 #include "mjpc/tasks/Fr3/fr3.h"
 #include "mjpc/tasks/Fr3Reach/fr3.h"
 #include "mjpc/tasks/Fr3OodSim2Real/fr3.h"
+#include "mjpc/tasks/Fr3HGripper/fr3.h"
+#include "mjpc/tasks/Fr3HGripperReach/fr3.h"
+#include "mjpc/tasks/Fr3HGripperCarry/fr3.h"
+#include "mjpc/tasks/Fr3HGripperDual/fr3.h"
+#include "mjpc/tasks/Fr3HGripperPot/fr3.h"
+#include "mjpc/tasks/Fr3Grasp/fr3.h"
+#include "mjpc/tasks/Fr3Pick/fr3.h"
 #include "mjpc/tasks/Fr3MazeForce/fr3_maze_force.h"
 #include "mjpc/tasks/Fr3Obstacle/fr3_obstacle.h"
 #include "mjpc/tasks/Fr3ObstacleQ/fr3_obstacle.h"
@@ -56,6 +63,13 @@ std::vector<std::shared_ptr<Task>> GetTasks() {
       std::make_shared<FR3>(),
       std::make_shared<FR3Reach>(),
       std::make_shared<FR3OodSim2Real>(),
+      std::make_shared<FR3HGripper>(),
+      std::make_shared<FR3HGripperReach>(),
+      std::make_shared<FR3HGripperCarry>(),
+      std::make_shared<FR3HGripperDual>(),
+      std::make_shared<FR3HGripperPot>(),
+      std::make_shared<FR3Grasp>(),
+      std::make_shared<FR3Pick>(),
       std::make_shared<FR3ObstacleQ>(),
       std::make_shared<FR3MazeForce>(),
       std::make_shared<FR3Obstacle>(),

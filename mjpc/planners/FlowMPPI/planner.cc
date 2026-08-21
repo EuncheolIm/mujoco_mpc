@@ -46,6 +46,25 @@
 
 namespace mjpc {
 
+// --- GPC-CEM baseline state (Brudermuller et al. RA-L 2026, Algorithm 1) --------
+// Enabled with MJPC_FM_GPC=1 on top of the existing mixture proposal
+// (MJPC_FM_MODE=wta MJPC_FM_FRAC=0.5): the proposal split is unchanged, but the
+// UPDATE becomes CEM — mean <- time-shifted best candidate, Sigma <- diag(Var of
+// the elite set), and the EXECUTED control is the single best candidate rather
+// than the softmax weighted average. Action-level annealing grows the std along
+// the horizon; a progress-based reset re-inflates it when the best cost stalls.
+// The flow prior is integrated from x0 = 0 (deterministic), so the N_flow
+// proposals are the prior plus the shared sampling noise rather than independent
+// generative samples — the same approximation used on the legged planner.
+constexpr double kGpcAnneal     = 1.0;    // std(end) = (1+kGpcAnneal) * std(start)
+constexpr double kGpcStdFloor   = 0.30;   // floor as a fraction of the annealed base
+constexpr int    kGpcPatience   = 15;     // stalled replans before a variance reset
+constexpr double kGpcResetScale = 2.0;
+static std::vector<double> g_fmcem_std;   // adaptive std, indexed [node*nu + k]
+static int    g_fmcem_nu = 0;
+static int    g_fmcem_stall = 0;
+static double g_fmcem_best_prev = 1e300;
+
 // All FM/PD constants (kp, kd, fm_chunk_dt, fm_te_decay, fm_te_buffer,
 // tau_max_big/small, lookahead, no_temporal_ensemble, chunk_idx, vel_ff,
 // and model paths) are loaded from fm_config.yaml via GetFMConfig().
@@ -118,10 +137,141 @@ void FlowMPPIPlanner::Initialize(mjModel* model, const Task& task) {
     }
   }
 
+  // Per-arm softmax - OPT-IN, see planner.h. Absent numeric => stock behaviour.
+  perarm_groups_ = static_cast<int>(GetNumberOrDefault(0.0, model, "perarm_groups"));
+  // MJPC_PERARM_GROUPS: override the xml, so per-arm vs shared softmax can be
+  // compared without editing the task. <=1 disables the split entirely.
+  if (const char* e = std::getenv("MJPC_PERARM_GROUPS"); e && e[0])
+    perarm_groups_ = std::atoi(e);
+  perarm_ctrl_.clear();
+  perarm_term_.clear();
+  if (perarm_groups_ > 1) {
+    int cid = mj_name2id(model, mjOBJ_NUMERIC, "perarm_ctrl");
+    int tid = mj_name2id(model, mjOBJ_NUMERIC, "perarm_term");
+    if (cid >= 0 && model->numeric_size[cid] == model->nu) {
+      const double* d = model->numeric_data + model->numeric_adr[cid];
+      for (int k = 0; k < model->nu; ++k)
+        perarm_ctrl_.push_back(static_cast<int>(d[k]));
+    }
+    if (tid >= 0) {
+      const double* d = model->numeric_data + model->numeric_adr[tid];
+      for (int k = 0; k < model->numeric_size[tid]; ++k)
+        perarm_term_.push_back(static_cast<int>(d[k]));
+    }
+    if (perarm_ctrl_.empty() || perarm_term_.empty()) {
+      perarm_groups_ = 0;
+      std::fprintf(stderr, "[FlowMPPI] per-arm softmax DISABLED (need perarm_ctrl[nu], perarm_term[#terms])\n");
+    } else {
+      std::fprintf(stderr,
+                   "[FlowMPPI] per-arm softmax ON: %d groups, %zu ctrl, %zu terms\n",
+                   perarm_groups_, perarm_ctrl_.size(), perarm_term_.size());
+    }
+  }
+
+  // Adaptive sampling sigma — OPT-IN, see planner.h. Absent numeric => 0 => the
+  // feature is fully inert (scale pinned at 1.0), so tasks that do not declare
+  // it sample exactly as before. Env vars refine it for sweeps only when the
+  // task has opted in.
+  sigma_adapt_ = GetNumberOrDefault(0.0, model, "sampling_sigma_adapt");
+  if (sigma_adapt_ > 0.0) {
+    sigma_adapt_min_ =
+        GetNumberOrDefault(0.02, model, "sampling_sigma_adapt_min");
+    sigma_adapt_decay_ =
+        GetNumberOrDefault(0.90, model, "sampling_sigma_adapt_decay");
+    sigma_adapt_grow_ =
+        GetNumberOrDefault(8.0, model, "sampling_sigma_adapt_grow");
+    sigma_adapt_thr_ =
+        GetNumberOrDefault(0.01, model, "sampling_sigma_adapt_thr");
+    sigma_adapt_res_off_ = static_cast<int>(
+        GetNumberOrDefault(0.0, model, "sampling_sigma_adapt_res_off"));
+    sigma_adapt_res_dim_ = static_cast<int>(
+        GetNumberOrDefault(3.0, model, "sampling_sigma_adapt_res_dim"));
+    sigma_adapt_hyst_ =
+        GetNumberOrDefault(3.0, model, "sampling_sigma_adapt_hyst");
+    sigma_adapt_hold_ =
+        GetNumberOrDefault(1.0, model, "sampling_sigma_adapt_hold");
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_HOLD"); e && e[0])
+      sigma_adapt_hold_ = std::atof(e);
+    sigma_adapt_thr_ori_ =
+        GetNumberOrDefault(0.017, model, "sampling_sigma_adapt_thr_ori");
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_THR_ORI"); e && e[0])
+      sigma_adapt_thr_ori_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_THR"); e && e[0])
+      sigma_adapt_thr_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_HYST"); e && e[0])
+      sigma_adapt_hyst_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_RESDIM"); e && e[0])
+      sigma_adapt_res_dim_ = std::atoi(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_MIN"); e && e[0])
+      sigma_adapt_min_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_DECAY"); e && e[0])
+      sigma_adapt_decay_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT_GROW"); e && e[0])
+      sigma_adapt_grow_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_SIGMA_ADAPT"); e && e[0])
+      sigma_adapt_ = std::atof(e);  // allows disabling from the sweep driver
+    std::fprintf(stderr,
+                 "[FlowMPPI] adaptive sigma %s: min=%.3g decay=%.3g "
+                 "thr_pos=%.4g thr_ori=%.4g hyst=%.2g res=[%d,%d)\n",
+                 sigma_adapt_ > 0.0 ? "ON" : "OFF", sigma_adapt_min_,
+                 sigma_adapt_decay_, sigma_adapt_thr_, sigma_adapt_thr_ori_,
+                 sigma_adapt_hyst_, sigma_adapt_res_off_,
+                 sigma_adapt_res_off_ + sigma_adapt_res_dim_);
+  }
+  sigma_adapt_scale_ = 1.0;
+  sigma_adapt_init_ = false;
+
+  // Per-group adaptive sigma (dual-arm). One shared gate would let a converged
+  // arm shrink the OTHER arm's noise, starving its search; the sampling
+  // covariance is diagonal, so each group can scale its own channels freely.
+  // Absent perarm_groups -> single group == the previous shared behavior.
+  {
+    const int ng = (perarm_groups_ > 1) ? perarm_groups_ : 1;
+    sigma_adapt_scale_g_.assign(ng, 1.0);
+    perarm_res_off_.assign(ng, sigma_adapt_res_off_);
+    int rid = mj_name2id(model, mjOBJ_NUMERIC, "perarm_res_off");
+    if (ng > 1 && rid >= 0 && model->numeric_size[rid] >= ng) {
+      const mjtNum* d = model->numeric_data + model->numeric_adr[rid];
+      for (int g = 0; g < ng; g++) perarm_res_off_[g] = static_cast<int>(d[g]);
+      std::fprintf(stderr, "[FlowMPPI] per-group sigma: %d groups, res_off =",
+                   ng);
+      for (int g = 0; g < ng; g++)
+        std::fprintf(stderr, " %d", perarm_res_off_[g]);
+      std::fprintf(stderr, "\n");
+    }
+  }
+
+  // Binary gripper command - OPT-IN, see planner.h.
+  grip_binary_ = GetNumberOrDefault(0.0, model, "gripper_binary") != 0.0;
+  if (const char* e = std::getenv("MJPC_GRIP_BINARY"); e && e[0])
+    grip_binary_ = std::atof(e) != 0.0;   // toggle without editing the task xml
+  if (grip_binary_) {
+    grip_idx_ = static_cast<int>(
+        GetNumberOrDefault(model->nu - 1, model, "gripper_ctrl_idx"));
+    grip_open_  = GetNumberOrDefault(0.0,  model, "gripper_open_cmd");
+    grip_close_ = GetNumberOrDefault(0.05, model, "gripper_close_cmd");
+    grip_hyst_hi_ = GetNumberOrDefault(0.7, model, "gripper_hyst_hi");
+    grip_hyst_lo_ = GetNumberOrDefault(0.3, model, "gripper_hyst_lo");
+    if (const char* e = std::getenv("MJPC_GRIP_HYST_HI"); e && e[0])
+      grip_hyst_hi_ = std::atof(e);
+    if (const char* e = std::getenv("MJPC_GRIP_HYST_LO"); e && e[0])
+      grip_hyst_lo_ = std::atof(e);
+    grip_state_closed_ = false;
+    if (grip_idx_ < 0 || grip_idx_ >= model->nu) grip_binary_ = false;
+    std::fprintf(stderr,
+                 "[FlowMPPI] binary gripper %s: ctrl[%d] in {open %.4g, close %.4g} "
+                 "hysteresis [%.2f, %.2f]\n",
+                 grip_binary_ ? "ON" : "OFF", grip_idx_, grip_open_, grip_close_,
+                 grip_hyst_lo_, grip_hyst_hi_);
+  }
+
   // DC-per-rollout noise: if 1, one Gaussian per (rollout, joint) broadcast
   // across all knots (reference tau-MPPI). If 0, each knot independent.
   noise_dc_per_rollout_ =
       GetNumberOrDefault(0.0, model, "sampling_dc_noise") != 0.0;
+  // env override (canonical Williams = per-knot white noise: MJPC_FM_DC_NOISE=0)
+  if (const char* e = std::getenv("MJPC_FM_DC_NOISE"); e && e[0])
+    noise_dc_per_rollout_ = std::atof(e) != 0.0;
 
   // Optional per-actuator std vector. Size must equal model->nu, else cleared
   // (falls back to legacy ctrlrange-scaled noise).
@@ -137,6 +287,91 @@ void FlowMPPIPlanner::Initialize(mjModel* model, const Task& task) {
     int sj_adr = model->numeric_adr[sj_id];
     noise_std_per_joint_.assign(model->numeric_data + sj_adr,
                                 model->numeric_data + sj_adr + sj_size);
+    // MJPC_STD_GRIP: sweep the GRIPPER channels' sampling std without editing the
+    // task xml. Applies only to actuators whose name ends in "grab_motor", so it
+    // is a no-op for every task that has none and when the variable is unset.
+    // Needed because the knot noise is scaled by 0.5 * ctrlrange width: the
+    // gripper's range is 0.2, so an xml std of 0.05 explores only +-0.005 of a
+    // 0.05 stroke and a rollout can never actually try closing.
+    // MJPC_STD_ARM: same idea for the NON-gripper channels, so the arm noise
+    // scale can be swept without editing the task xml. The knot noise is scaled
+    // by 0.5 * ctrlrange width, and an FR3 motor's range is +-87 Nm, so an xml
+    // std of 1.0 means 1-sigma rollouts apply FULL-SCALE torque - they fling the
+    // arm and break any grasp, leaving only the near-zero-noise rollouts to carry
+    // the update, which is why a held object never gets lifted.
+    // PHASE-DEPENDENT sigma (opt-in). The exploration a task needs is not the
+    // same in every phase: closing a gripper wants a loud gripper channel and a
+    // quiet arm (so the jaw shuts where it is), while lifting the grasped object
+    // wants a quiet, coordinated arm - measured on the pot carry, arm std 1.0
+    // closed the grippers (2/4 seeds, held 19 s) but never lifted, and std 0.3
+    // gave 1 mm alignment but never closed. One sigma cannot do both.
+    // sigma_phase_src = index of the task PARAMETER carrying the phase signal in
+    // [0,1] (the pot task publishes its ramped firm-grasp signal there); the two
+    // scales are blended in linearly with it, so the switch is as smooth as the
+    // signal. Absent numeric => feature inert.
+    // Blend the per-arm and the SHARED softmax instead of choosing one. The MPPI
+    // update is linear in the weights, so a convex combination of two valid
+    // weight vectors is itself a valid update, and each channel then earns credit
+    // from BOTH its own arm's cost and the joint cost. The two endpoints are
+    // measured: per-arm only gives 4/4 firm two-arm grasps and no lift, shared
+    // only lifts with both arms but holds 2/4. Costs one multiply per channel -
+    // no Jacobian, no projection, so none of the object-space drawbacks.
+    perarm_blend_ = GetNumberOrDefault(0.0, model, "perarm_shared_blend");
+    if (const char* e = std::getenv("MJPC_POT_BLEND"); e && e[0])
+      perarm_blend_ = std::atof(e);
+    perarm_blend_src_ = static_cast<int>(
+        GetNumberOrDefault(-1.0, model, "perarm_shared_blend_src"));
+    if (perarm_blend_ > 0.0)
+      std::fprintf(stderr,
+                   "[FlowMPPI] shared-softmax blend beta=%.2f%s\n", perarm_blend_,
+                   perarm_blend_src_ >= 0 ? " (scaled by the phase param)" : "");
+    perarm_phase_src_ = static_cast<int>(
+        GetNumberOrDefault(-1.0, model, "perarm_phase_src"));
+    if (perarm_phase_src_ >= 0)
+      std::fprintf(stderr,
+                   "[FlowMPPI] per-arm groups collapse to one softmax when "
+                   "param[%d] > 0.5\n", perarm_phase_src_);
+    sigma_phase_src_ = static_cast<int>(
+        GetNumberOrDefault(-1.0, model, "sigma_phase_src"));
+    sigma_phase_arm_ = GetNumberOrDefault(1.0, model, "sigma_phase_arm");
+    sigma_phase_grip_ = GetNumberOrDefault(1.0, model, "sigma_phase_grip");
+    if (sigma_phase_src_ >= 0) {
+      sigma_phase_is_grip_.assign(model->nu, false);
+      for (int k = 0; k < model->nu; k++) {
+        const char* nm = mj_id2name(model, mjOBJ_ACTUATOR, k);
+        size_t len = nm ? std::strlen(nm) : 0, suf = std::strlen("grab_motor");
+        sigma_phase_is_grip_[k] =
+            nm && len >= suf && !std::strcmp(nm + len - suf, "grab_motor");
+      }
+      std::fprintf(stderr,
+                   "[FlowMPPI] phase sigma ON: param[%d], arm x%g grip x%g when 1\n",
+                   sigma_phase_src_, sigma_phase_arm_, sigma_phase_grip_);
+    }
+    if (const char* e = std::getenv("MJPC_STD_ARM"); e && e[0]) {
+      double v = std::atof(e);
+      int nset = 0;
+      for (int k = 0; k < model->nu; k++) {
+        const char* nm = mj_id2name(model, mjOBJ_ACTUATOR, k);
+        size_t len = nm ? std::strlen(nm) : 0, suf = std::strlen("grab_motor");
+        bool is_grip = nm && len >= suf && !std::strcmp(nm + len - suf, "grab_motor");
+        if (!is_grip) { noise_std_per_joint_[k] *= v; nset++; }
+      }
+      std::fprintf(stderr, "[FlowMPPI] MJPC_STD_ARM x%g on %d channel(s)\n", v, nset);
+    }
+    if (const char* e = std::getenv("MJPC_STD_GRIP"); e && e[0]) {
+      double v = std::atof(e);
+      int nset = 0;
+      for (int k = 0; k < model->nu; k++) {
+        const char* nm = mj_id2name(model, mjOBJ_ACTUATOR, k);
+        if (!nm) continue;
+        size_t len = std::strlen(nm), suf = std::strlen("grab_motor");
+        if (len >= suf && !std::strcmp(nm + len - suf, "grab_motor")) {
+          noise_std_per_joint_[k] = v; nset++;
+        }
+      }
+      std::fprintf(stderr, "[FlowMPPI] MJPC_STD_GRIP=%g applied to %d channel(s)\n",
+                   v, nset);
+    }
   }
 
   // ===== one-time colored run-config summary =====
@@ -218,6 +453,16 @@ void FlowMPPIPlanner::Allocate() {
 // reset memory to zeros
 void FlowMPPIPlanner::Reset(int horizon,
                             const double* initial_repeated_action) {
+  // GPC-CEM adaptive covariance / stall counter must not leak across episodes.
+  g_fmcem_std.clear(); g_fmcem_nu = 0;
+  g_fmcem_stall = 0;   g_fmcem_best_prev = 1e300;
+
+  // adaptive sigma state (no-op unless the task opted in)
+  sigma_adapt_scale_ = 1.0;
+  sigma_adapt_cost_ = 0.0;
+  sigma_adapt_init_ = false;
+  for (double& s : sigma_adapt_scale_g_) s = 1.0;
+
   // state
   std::fill(state.begin(), state.end(), 0.0);
   std::fill(mocap.begin(), mocap.end(), 0.0);
@@ -296,7 +541,35 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   }
   UpdateFM();          // throttled (chunk receive + TE blend)
   PublishFMTarget();   // every iter (time-shifted q_fm_target)
+
+  // Diffusion-MPPI (huang2024diffusion) blend: instead of splitting the rollout
+  // set, EVERY rollout is centred on Uhat = l*U_nom + (1-l)*U_p. fm_nominal_ is
+  // a copy of the MPPI nominal at this point, and ApplyWarmstart overwrites it
+  // with the prior -- so snapshot it first, then interpolate the two and let
+  // the whole budget sample around the result (fm_frac forced to 1 below).
+  // l=1 recovers vanilla, l=0 recovers warm-start. Off unless MJPC_FM_BLEND_L.
+  static const double kFmBlendL = []{
+    const char* e = std::getenv("MJPC_FM_BLEND_L");
+    if (!e || !e[0]) return -1.0;
+    double v = std::atof(e);
+    return (v >= 0.0 && v <= 1.0) ? v : -1.0;
+  }();
+  const bool blend_on = (kFmBlendL >= 0.0) && !fm_cost_mode;
+  TimeSpline nom_pre;
+  if (blend_on) nom_pre = fm_nominal_.plan;
   if (!fm_cost_mode) ApplyWarmstart();
+  if (blend_on) {
+    const int nk = std::min(fm_nominal_.plan.Size(), nom_pre.Size());
+    for (int t = 0; t < nk; ++t) {
+      auto a = fm_nominal_.plan.begin() + t;
+      auto b = nom_pre.begin() + t;
+      double* va = a->values().data();
+      const double* vb = b->values().data();
+      const int n = std::min<int>(a->values().size(), b->values().size());
+      for (int j = 0; j < n; ++j)
+        va[j] = kFmBlendL * vb[j] + (1.0 - kFmBlendL) * va[j];
+    }
+  }
 
   // if num_trajectory_ has changed, use it in this new iteration.
   // num_trajectory_ might change while this function runs. Keep it constant
@@ -316,6 +589,9 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
       double v = std::atof(e);
       if (v >= 0.0 && v <= 1.0) fm_frac = v;
     }
+    // Blend centres EVERY rollout on the blended nominal, so the whole budget
+    // belongs to the "fm" group regardless of what MJPC_FM_FRAC says.
+    if (blend_on) fm_frac = 1.0;
     N_fm_ = fm_cost_mode ? 0 : static_cast<int>(num_trajectory * fm_frac);
   }
 
@@ -326,6 +602,108 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // simulate noisy policies
   policy.plan.SetInterpolation(interpolation_);
   this->Rollouts(num_trajectory, horizon, pool);
+
+  // ----- adaptive sigma update (opt-in; see planner.h) -----------------------
+  // Decide the multiplier for the NEXT replan from how the best rollout cost
+  // moved: rising => the situation changed, re-expand at once; stalled => the
+  // task has converged, shrink so the weighted noise average stops pushing the
+  // nominal around; still improving => hold, so a shrinking sigma can never
+  // stall an approach that is still making progress.
+  if (sigma_adapt_ > 0.0) {
+    int best_i = 0;
+    double best = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < num_trajectory; ++i) {
+      if (trajectory[i].total_return < best) {
+        best = trajectory[i].total_return;
+        best_i = i;
+      }
+    }
+
+    // Gate on the TASK ERROR, not on the cost. A cost-relative test cannot work
+    // here: the converged best cost already fluctuates ~2x between replans, and
+    // a running mean silently tracks a slow degradation, so a shrinking sigma
+    // can starve the controller and never detect that it did (measured: sigma
+    // collapsed to the floor and the hand ended 746 mm from the target).
+    // The first `sigma_adapt_res_dim_` residual entries of the best rollout's
+    // FIRST step are the task-space error (position for the FR3 reach tasks), an
+    // absolute quantity in metres that is independent of every cost weight:
+    //   error > threshold  -> not there yet: sigma back to full, always.
+    //   error <= threshold -> in the converged basin: shrink geometrically.
+    // Recovery is immediate and unconditional, so a moved target or a
+    // disturbance always restores full exploration.
+    // Position and orientation are judged SEPARATELY and each normalised by its
+    // own threshold, then combined as a max. One shared norm does not work: at
+    // pos 1.5 mm / ori 0.5 deg the terms are 0.0015 and 0.0087, so orientation
+    // silently dominates and the position criterion becomes meaningless.
+    // err is therefore dimensionless: < 1 == converged on BOTH.
+    // One gate PER GROUP: each group is scored by its own (pos3, ori3) block at
+    // perarm_res_off_[g], and only that group's sigma is shrunk. Sharing one gate
+    // across arms makes a converged arm starve the other one's search.
+    const int NG = static_cast<int>(sigma_adapt_scale_g_.size());
+    double err = 0.0;   // reported by the diagnostic (worst group)
+    for (int g = 0; g < NG; ++g) {
+      const int off = perarm_res_off_[g];
+      double eg = 0.0;
+      if (sigma_adapt_res_dim_ > 0 && task->num_residual >= off + 6) {
+        const double* r = trajectory[best_i].residual.data() + off;
+        const int npair = std::max(1, sigma_adapt_res_dim_ / 6);
+        for (int pp = 0; pp < npair; ++pp) {
+          const double* rp = r + 6 * pp;
+          double pos_n = 0.0;
+          for (int k = 0; k < 3; ++k) pos_n += rp[k] * rp[k];
+          double e = std::sqrt(pos_n) / std::max(sigma_adapt_thr_, 1e-12);
+          if (sigma_adapt_thr_ori_ > 0.0) {
+            double ori_n = 0.0;
+            for (int k = 3; k < 6; ++k) ori_n += rp[k] * rp[k];
+            e = std::max(e, std::sqrt(ori_n) / sigma_adapt_thr_ori_);
+          }
+          eg = std::max(eg, e);
+        }
+      }
+      if (eg > sigma_adapt_hyst_) {
+        sigma_adapt_scale_g_[g] =
+            std::min(1.0, sigma_adapt_scale_g_[g] * std::max(sigma_adapt_grow_, 1.01));
+      } else if (eg < 1.0) {
+        sigma_adapt_scale_g_[g] =
+            std::max(sigma_adapt_min_, sigma_adapt_scale_g_[g] * sigma_adapt_decay_);
+      }
+      err = std::max(err, eg);
+    }
+    if (NG > 0) sigma_adapt_scale_ = sigma_adapt_scale_g_[0];  // legacy readers
+
+    sigma_adapt_cost_ = err;  // reported by the diagnostic below
+
+    // diagnostic: MJPC_SIGMA_ADAPT_LOG=<n> prints every n-th replan
+    static const int adapt_log = []() {
+      const char* e = std::getenv("MJPC_SIGMA_ADAPT_LOG");
+      return (e && e[0]) ? std::atoi(e) : 0;
+    }();
+    if (adapt_log > 0) {
+      static std::atomic<long> adapt_iter{0};
+      long it = adapt_iter++;
+      if (it % adapt_log == 0) {
+        std::fprintf(stderr, "[sigma_adapt] it=%ld err=%.5f best=%.6g scale", it,
+                     sigma_adapt_cost_, best);
+        for (int g = 0; g < NG; ++g) {
+          double eg = 0.0;
+          const int off = perarm_res_off_[g];
+          if (task->num_residual >= off + 6) {
+            const double* rp = trajectory[best_i].residual.data() + off;
+            double pn = 0.0, on = 0.0;
+            for (int k = 0; k < 3; ++k) pn += rp[k] * rp[k];
+            for (int k = 3; k < 6; ++k) on += rp[k] * rp[k];
+            eg = std::max(std::sqrt(pn) / std::max(sigma_adapt_thr_, 1e-12),
+                          sigma_adapt_thr_ori_ > 0.0
+                              ? std::sqrt(on) / sigma_adapt_thr_ori_
+                              : 0.0);
+          }
+          std::fprintf(stderr, "[%d]=%.4f(e=%.2f)", g, sigma_adapt_scale_g_[g],
+                       eg);
+        }
+        std::fprintf(stderr, "\n");
+      }
+    }
+  }
 
   // Per-group softmax + winner-take-all.
   // Two rollout groups: FM-nominal-based (i < N_fm) and MPPI-nominal-based
@@ -362,6 +740,24 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   if (const char* e = std::getenv("MJPC_FM_SOFTMAX"); e && e[0]) {
     shared_softmax = (std::string(e) == "shared");
   }
+  // MJPC_FM_ELITE=k: CEM-style elite selection — restrict the (shared) softmax to the
+  // k lowest-cost rollouts across the full mixed pool (FM + MPPI). Forces shared softmax.
+  int elite_k = 0;
+  if (const char* e = std::getenv("MJPC_FM_ELITE"); e && e[0]) {
+    elite_k = std::atoi(e);
+    if (elite_k > 0) shared_softmax = true;
+  }
+  // MJPC_FM_GPC=1: replace the softmax update with the GPC-CEM update
+  // (best-candidate mean + elite covariance). Forces the shared pool.
+  static const bool gpc_cem = std::getenv("MJPC_FM_GPC") != nullptr;
+  if (gpc_cem) shared_softmax = true;
+  // Blend must use the SHARED softmax. With every rollout in the "fm" group the
+  // winner-take-all path leaves the MPPI group empty, so mppi_nominal_ never
+  // accumulates and the carried nominal freezes -- l=1 would then NOT reduce to
+  // vanilla. The shared path bases the update on mppi_nominal_ and, since the
+  // weights sum to 1, yields the weighted mean of the candidates regardless of
+  // where they were centred, which is exactly the intended blend semantics.
+  if (blend_on) shared_softmax = true;
 
   // OPTIONAL min-max cost normalization (env MJPC_MINMAX_NORM=1). Mirrors the
   // legged whole_body_mppi: weight = exp(-((ret-min)/(max-min)) / lambda), so
@@ -404,6 +800,19 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
       weights[i] = std::exp(-(trajectory[i].total_return - min_all) / (den_all * mppi_lambda_));
       sum_all += weights[i];
     }
+    // Elite restriction (MJPC_FM_ELITE=k): keep only the k lowest-cost rollouts.
+    if (elite_k > 0 && elite_k < num_trajectory) {
+      std::vector<int> idx(num_trajectory);
+      for (int i = 0; i < num_trajectory; ++i) idx[i] = i;
+      std::partial_sort(idx.begin(), idx.begin() + elite_k, idx.end(),
+          [&](int a, int b){ return trajectory[a].total_return < trajectory[b].total_return; });
+      std::vector<char> keep(num_trajectory, 0);
+      for (int e = 0; e < elite_k; ++e) keep[idx[e]] = 1;
+      sum_all = 0.0;
+      for (int i = 0; i < num_trajectory; ++i) {
+        if (!keep[i]) weights[i] = 0.0; else sum_all += weights[i];
+      }
+    }
     if (sum_all > 0) for (int i = 0; i < num_trajectory; ++i) weights[i] /= sum_all;
     // Bookkeeping for diag: split sums for logging (post-normalization).
     for (int i = 0; i < N_fm; ++i)              sum_w_fm   += weights[i];
@@ -423,6 +832,86 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
     if (sum_w_mppi > 0) for (int i = N_fm; i < num_trajectory; ++i)  weights[i] /= sum_w_mppi;
   }
 
+  // ---------------------------------------------------------------------
+  // Effective sample size (ESS) & chi^2 for the paper's sampling-quality
+  // analysis (root.tex Sec. II.C).  ESS = (sum w)^2 / sum w^2 in [1,K];
+  // chi^2 = K/ESS - 1;  ESS/K = 1/(1+chi^2) is the K-free reporting form.
+  //
+  // Two variants per replan:
+  //   ess       -- from the weights the planner actually applies.
+  //   ess_task  -- from the TASK-ONLY return, i.e. total_return minus the
+  //                FM_track (prior-residual) term.  Prop. 1 references every
+  //                scheme to the common UNRESHAPED task target (alpha=0,
+  //                root.tex ~line 316), so this is the theory-matching one.
+  //                Identical to ess whenever fm_track_scale = 0.
+  // total_return is the MEAN over the horizon (trajectory.cc:325), so the
+  // FM_track contribution is subtracted with the same 1/horizon scaling.
+  // Gated by MJPC_ESS_OUT; costs one CostTerms call per (rollout, step), so it
+  // stays off unless the diagnostic is explicitly requested.
+  static FILE* ess_f = []{ const char* p = std::getenv("MJPC_ESS_OUT");
+                           return p ? std::fopen(p, "w") : (FILE*)nullptr; }();
+  if (ess_f) {
+    // FM_track user-sensor index (resolved once).
+    static int fm_idx = [&]{
+      int t = 0;
+      for (int s = 0; s < model->nsensor; ++s) {
+        if (model->sensor_type[s] != mjSENS_USER) continue;
+        const char* sn = mj_id2name(model, mjOBJ_SENSOR, s);
+        if (sn && std::string(sn) == "FM_track") return t;
+        ++t;
+      }
+      return -1;
+    }();
+
+    double sw = 0.0, sw2 = 0.0, wmax = 0.0;
+    for (int i = 0; i < num_trajectory; ++i) {
+      sw += weights[i]; sw2 += weights[i] * weights[i];
+      wmax = std::max(wmax, weights[i]);
+    }
+    double ess = (sw2 > 0.0) ? (sw * sw) / sw2 : 0.0;
+
+    // Task-only return per rollout, then its own softmax at the SAME lambda.
+    std::vector<double> tret(num_trajectory);
+    double terms[kMaxCostTerms];
+    for (int i = 0; i < num_trajectory; ++i) {
+      double fm_sum = 0.0;
+      const int H = trajectory[i].horizon;
+      if (fm_idx >= 0) {
+        for (int t = 0; t < H; ++t) {
+          task->CostTerms(terms, trajectory[i].residual.data()
+                                     + t * task->num_residual);
+          fm_sum += terms[fm_idx];
+        }
+        fm_sum /= mju_max(H, 1);
+      }
+      tret[i] = trajectory[i].total_return - fm_sum;
+    }
+    double tmin = 1e300, tmax = -1e300;
+    for (int i = 0; i < num_trajectory; ++i) {
+      tmin = std::min(tmin, tret[i]); tmax = std::max(tmax, tret[i]);
+    }
+    const double tden = (minmax_norm && (tmax - tmin) > 1e-9)
+                            ? (tmax - tmin) * mppi_lambda_ : mppi_lambda_;
+    double tw = 0.0, tw2 = 0.0;
+    for (int i = 0; i < num_trajectory; ++i) {
+      double w = std::exp(-(tret[i] - tmin) / tden);
+      tw += w; tw2 += w * w;
+    }
+    double ess_task = (tw2 > 0.0) ? (tw * tw) / tw2 : 0.0;
+
+    // Weight share earned by the prior-centred group (mixture: i < N_fm).
+    // Near zero => that half of the budget contributes nothing to the update.
+    double w_prior = 0.0;
+    for (int i = 0; i < N_fm; ++i) w_prior += weights[i];
+
+    fprintf(ess_f, "%d %.4f %.4f %.4f %.4f %.6g %.6g %.4f %.4f\n",
+            num_trajectory, ess, num_trajectory / (ess + 1e-9) - 1.0,
+            ess_task, num_trajectory / (ess_task + 1e-9) - 1.0,
+            tmin, tmax - tmin, (sw > 0.0) ? wmax / sw : 0.0,
+            (sw > 0.0) ? w_prior / sw : 0.0);
+    fflush(ess_f);
+  }
+
   // Snapshot of MPPI nominal at start of this step (for diagnostic L2 vs the
   // post-update mppi_nominal_).
   TimeSpline mppi_nominal_pre = mppi_nominal_.plan;
@@ -430,7 +919,117 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   {  // <-- 잠금 시작
     const std::unique_lock<std::shared_mutex> lock(mtx_);
 
-    if (shared_softmax) {
+    // ---- PER-ARM weights (opt-in; see planner.h) --------------------------
+    // Split the rollout cost by TERM into one sum per group (a term marked -1 is
+    // shared, e.g. cross-arm collision), then run an independent softmax per
+    // group. Each control channel is later updated with its OWN group's weights,
+    // so an arm is judged only by its own cost instead of the sum of both.
+    // PHASE-DEPENDENT grouping (opt-in via perarm_phase_src). Per-arm softmax is
+    // the right credit assignment while the arms do independent work, and the
+    // WRONG one once they cooperate on a shared term: a rollout in which only the
+    // right arm lifts improves the shared object cost, and that improvement is
+    // added to the LEFT group's cost too, so the left arm is paid for the right
+    // arm's action and never learns to lift. Observed in the GUI and in the sweep
+    // as exactly that - the pot rising on one side only, tipped ~20 deg, with the
+    // other side still on the floor. So while the phase signal says "carrying",
+    // the groups collapse to a single softmax over the joint action.
+    bool collapse = false;
+    if (perarm_phase_src_ >= 0 &&
+        perarm_phase_src_ < static_cast<int>(task->parameters.size()))
+      collapse = task->parameters[perarm_phase_src_] > 0.5;
+    std::vector<std::vector<double>> wg;
+    if (perarm_groups_ > 1 && !collapse) {
+      const int G = perarm_groups_;
+      const int nterm = static_cast<int>(perarm_term_.size());
+      wg.assign(G, std::vector<double>(num_trajectory, 0.0));
+      std::vector<std::vector<double>> Jg(G, std::vector<double>(num_trajectory, 0.0));
+      double terms[kMaxCostTerms];
+      for (int i = 0; i < num_trajectory; ++i) {
+        const int H = trajectory[i].horizon;
+        for (int t = 0; t < H; ++t) {
+          task->CostTerms(terms, trajectory[i].residual.data() +
+                                     t * task->num_residual);
+          for (int m = 0; m < nterm; ++m) {
+            int g = perarm_term_[m];
+            if (g < 0) {
+              for (int gg = 0; gg < G; ++gg) Jg[gg][i] += terms[m];
+            } else if (g < G) {
+              Jg[g][i] += terms[m];
+            }
+          }
+        }
+        for (int g = 0; g < G; ++g) Jg[g][i] /= std::max(H, 1);
+      }
+      for (int g = 0; g < G; ++g) {
+        double mn = *std::min_element(Jg[g].begin(), Jg[g].end());
+        double sum = 0.0;
+        for (int i = 0; i < num_trajectory; ++i) {
+          wg[g][i] = std::exp(-(Jg[g][i] - mn) / mppi_lambda_);
+          sum += wg[g][i];
+        }
+        if (sum > 0.0)
+          for (int i = 0; i < num_trajectory; ++i) wg[g][i] /= sum;
+      }
+    }
+    // channel -> weight for rollout i. The wg.empty() test is essential, not
+    // defensive: when the groups collapse for the carry phase wg is deliberately
+    // left empty, and indexing it then reads out of bounds - it segfaulted the
+    // GUI outright and silently returned garbage weights in the headless runs.
+    double beta = perarm_blend_;
+    if (beta > 0.0 && perarm_blend_src_ >= 0)
+      beta *= (perarm_blend_src_ < static_cast<int>(task->parameters.size()))
+                  ? mju_clip(task->parameters[perarm_blend_src_], 0.0, 1.0)
+                  : 0.0;
+    auto wsel = [&, beta](int i, int k) {
+      if (!wg.empty() && perarm_groups_ > 1 &&
+          k < static_cast<int>(perarm_ctrl_.size())) {
+        int g = perarm_ctrl_[k];
+        if (g >= 0 && g < static_cast<int>(wg.size()))
+          return (1.0 - beta) * wg[g][i] + beta * weights[i];
+      }
+      return weights[i];
+    };
+
+    if (gpc_cem) {
+      // ---- GPC-CEM update (Algorithm 1) ------------------------------------
+      // mean <- best candidate (also the executed control), Sigma <- elite Var.
+      int nel = std::getenv("MJPC_GPC_ELITE")
+                    ? std::atoi(std::getenv("MJPC_GPC_ELITE"))
+                    : (elite_k > 0 ? elite_k
+                                   : std::max(2, (int)std::lround(0.152 * num_trajectory)));
+      nel = std::max(2, std::min(nel, num_trajectory));
+      std::vector<int> idx(num_trajectory);
+      for (int i = 0; i < num_trajectory; ++i) idx[i] = i;
+      std::partial_sort(idx.begin(), idx.begin() + nel, idx.end(),
+          [&](int a, int b){ return trajectory[a].total_return < trajectory[b].total_return; });
+      const int best = idx[0];
+      mppi_nominal_.plan = candidate_policy[best].plan;
+      policy.plan        = candidate_policy[best].plan;
+      last_winner_was_fm_ = (best < N_fm);
+      const int nnode = policy.plan.Size();
+      g_fmcem_nu = model->nu;
+      g_fmcem_std.assign((size_t)nnode * model->nu, 0.0);
+      for (int t = 0; t < nnode; ++t) {
+        for (int k = 0; k < model->nu; ++k) {
+          double m = 0.0;
+          for (int e = 0; e < nel; ++e)
+            m += (candidate_policy[idx[e]].plan.begin() + t)->values()[k];
+          m /= nel;
+          double s2 = 0.0;
+          for (int e = 0; e < nel; ++e) {
+            double d = (candidate_policy[idx[e]].plan.begin() + t)->values()[k] - m;
+            s2 += d * d;
+          }
+          g_fmcem_std[(size_t)t * model->nu + k] = std::sqrt(s2 / nel);
+        }
+      }
+      double bc = trajectory[best].total_return;
+      if (bc < g_fmcem_best_prev - 1e-9) { g_fmcem_best_prev = bc; g_fmcem_stall = 0; }
+      else if (++g_fmcem_stall >= kGpcPatience) {
+        for (auto& v : g_fmcem_std) v *= kGpcResetScale;
+        g_fmcem_stall = 0; g_fmcem_best_prev = bc;
+      }
+    } else if (shared_softmax) {
       // Single weighted-average across all N rollouts. Uses mppi_nominal_ as
       // base; Σ w_i = 1 makes the result Σ w_i * candidate_i regardless of
       // base. Both mppi_nominal_ and policy.plan get this result — FM
@@ -444,7 +1043,7 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
           auto cand_node = candidate_policy[i].plan.begin() + t;
           for (int k = 0; k < model->nu; ++k) {
             base_node->values()[k] +=
-                weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+                wsel(i, k) * (cand_node->values()[k] - pol_node->values()[k]);
           }
         }
       }
@@ -461,7 +1060,7 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
           auto cand_node = candidate_policy[i].plan.begin() + t;
           for (int k = 0; k < model->nu; ++k) {
             base_node->values()[k] +=
-                weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+                wsel(i, k) * (cand_node->values()[k] - pol_node->values()[k]);
           }
         }
       }
@@ -476,7 +1075,7 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
           auto cand_node = candidate_policy[i].plan.begin() + t;
           for (int k = 0; k < model->nu; ++k) {
             base_node->values()[k] +=
-                weights[i] * (cand_node->values()[k] - pol_node->values()[k]);
+                wsel(i, k) * (cand_node->values()[k] - pol_node->values()[k]);
           }
         }
       }
@@ -651,6 +1250,8 @@ void FlowMPPIPlanner::ActionFromPolicy(double* action, const double* state,
   } else {
     policy.Action(action, state, time);
   }
+  // executed command: latch on the planner's own state
+  QuantizeGripHyst(action, &grip_state_closed_);
 
   // // =============== EC =============== //
   // if (this->model) {
@@ -814,6 +1415,43 @@ void FlowMPPIPlanner::AddNoiseToPolicy(double start_time, int i, double scale) {
                             model->actuator_ctrlrange[2 * k]);
       sigma[k] = scale * std;
     }
+    // Adaptive sigma, applied PER CHANNEL: the covariance is diagonal, so each
+    // arm (control group) can shrink independently. 1.0 unless the task opted in.
+    sigma[k] *= SigmaScaleForChannel(k);
+    if (sigma_phase_src_ >= 0 && k < static_cast<int>(sigma_phase_is_grip_.size()) &&
+        sigma_phase_src_ < static_cast<int>(task->parameters.size())) {
+      const double ph = mju_clip(task->parameters[sigma_phase_src_], 0.0, 1.0);
+      const double tgt =
+          sigma_phase_is_grip_[k] ? sigma_phase_grip_ : sigma_phase_arm_;
+      sigma[k] *= (1.0 - ph) + ph * tgt;
+    }
+  }
+
+  // GPC-CEM: per-(knot, joint) std from the previous elite set, annealed along
+  // the horizon and floored at kGpcStdFloor x the annealed base.
+  static const bool gpc_noise = std::getenv("MJPC_FM_GPC") != nullptr;
+  if (gpc_noise) {
+    const int nnode = candidate_policy[i].plan.Size();
+    int nj = 0;
+    for (const TimeSpline::Node& node : candidate_policy[i].plan) {
+      double frac = (nnode > 1) ? (double)nj / (double)(nnode - 1) : 0.0;
+      // N_CEM proposals use the adaptive Sigma; N_Flow proposals (i < N_fm_) do
+      // NOT -- in Algorithm 1 they are drawn from p_theta independently of Sigma,
+      // so a shrinking Sigma must not collapse them onto the prior mean.
+      const bool is_flow = (i < N_fm_);
+      for (int k = 0; k < model->nu; k++) {
+        double base = sigma[k] * (1.0 + kGpcAnneal * frac);
+        double sd = base;
+        int gi = nj * model->nu + k;
+        if (!is_flow && g_fmcem_nu == model->nu && gi < (int)g_fmcem_std.size())
+          sd = std::max(g_fmcem_std[gi], kGpcStdFloor * base);
+        node.values()[k] += absl::Gaussian<double>(gen_, 0.0, sd);
+      }
+      Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+      nj++;
+    }
+    IncrementAtomic(noise_compute_time, GetDuration(noise_start));
+    return;
   }
 
   if (noise_dc_per_rollout_) {
@@ -822,10 +1460,19 @@ void FlowMPPIPlanner::AddNoiseToPolicy(double start_time, int i, double scale) {
     for (int k = 0; k < model->nu; k++) {
       dc[k] = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
     }
+    // Binary gripper: this rollout commits to OPEN or CLOSE for the whole
+    // horizon (see planner.h). Written as an absolute value, so the Gaussian
+    // offset for that channel is discarded rather than added.
+    double grip_cmd = 0.0;
+    if (grip_binary_) {
+      grip_cmd = absl::Bernoulli(gen_, 0.5) ? grip_close_ : grip_open_;
+    }
     for (const TimeSpline::Node& node : candidate_policy[i].plan) {
       for (int k = 0; k < model->nu; k++) {
+        if (grip_binary_ && k == grip_idx_) continue;
         node.values()[k] += dc[k];
       }
+      if (grip_binary_) node.values()[grip_idx_] = grip_cmd;
       Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
     }
   } else {
@@ -889,6 +1536,10 @@ void FlowMPPIPlanner::Rollouts(int num_trajectory, int horizon,
         if (i < N_fm) {
           s.candidate_policy[i].CopyFrom(s.fm_nominal_,
                                          s.fm_nominal_.num_spline_points);
+          // GPC-CEM with genuine p_theta proposals: candidate i takes the i-th
+          // stochastic flow sample instead of the single deterministic prior.
+          if (i < (int)s.gpc_flow_plans_.size() && s.gpc_flow_valid_[i])
+            s.candidate_policy[i].plan = s.gpc_flow_plans_[i];
         } else {
           s.candidate_policy[i].CopyFrom(s.mppi_nominal_,
                                          s.mppi_nominal_.num_spline_points);
@@ -901,22 +1552,33 @@ void FlowMPPIPlanner::Rollouts(int num_trajectory, int horizon,
       // ⇒ FM samples cluster closer to FM PD torque ⇒ they stay "contact
       // capable" and dominate winner-take-all more reliably, while MPPI
       // group's wider noise keeps exploring xy-tracking refinements.
-      if (i != 0 && i != N_fm) {
+      // canonical Williams = NO noise-free anchor (MJPC_FM_NO_ANCHOR=1 -> noise all rollouts)
+      static const bool no_anchor = []() {
+        const char* e = std::getenv("MJPC_FM_NO_ANCHOR");
+        return e && e[0] && std::atof(e) != 0.0;
+      }();
+      if (no_anchor || (i != 0 && i != N_fm)) {
         double scale = 1.0;
         if (i < N_fm) {
           if (const char* e = std::getenv("MJPC_FM_NOISE_SCALE"); e && e[0])
             scale = std::atof(e);
         }
+        // Adaptive sigma is applied PER CHANNEL inside AddNoiseToPolicy (the
+        // covariance is diagonal, so each arm can carry its own scale).
         s.AddNoiseToPolicy(time, i, scale);
       }
 
       // ----- rollout sample policy ----- //
 
       // policy
-      auto sample_policy_i = [&candidate_policy = s.candidate_policy, &i](
+      // Each rollout latches its OWN gripper state, seeded from the real one, so
+      // predictions match what the hardware would do without sharing state.
+      bool grip_closed_i = s.grip_state_closed_;
+      auto sample_policy_i = [&s, &i, grip_closed_i](
                                  double* action, const double* state,
-                                 double time) {
-        candidate_policy[i].Action(action, state, time);
+                                 double time) mutable {
+        s.candidate_policy[i].Action(action, state, time);
+        s.QuantizeGripHyst(action, &grip_closed_i);
       };
 
       // policy rollout
@@ -1161,7 +1823,10 @@ void FlowMPPIPlanner::UpdateFM() {
           fm_policy_ = std::make_unique<ONNXPolicy>(ckpt.c_str(), stats.c_str());
           if (fm_policy_->isLoaded()) {
             fm_policy_->setNumOdeSteps(fmc.fm_ode_steps);
-            fm_policy_->startFMThread();
+            // MJPC_FM_SYNC: run FM inline (no background thread) for deterministic
+            // offline sweeps; default keeps the async deployment-faithful thread.
+            static const bool fm_sync = std::getenv("MJPC_FM_SYNC") != nullptr;
+            if (!fm_sync) fm_policy_->startFMThread();
             fm_loaded_ = true;
             std::printf("[FlowMPPI] FM loaded: state=%d action=%d horizon=%d "
                         "ode_steps=%d\n",
@@ -1311,10 +1976,18 @@ void FlowMPPIPlanner::UpdateFM() {
       last_chunk_recv_time_ = time;
     }
   } else {
-    fm_policy_->requestPrediction(s_vec, prev_state_, prev_action_, goal);
-
+    static const bool fm_sync = std::getenv("MJPC_FM_SYNC") != nullptr;
     std::vector<Eigen::VectorXd> chunk;
-    if (fm_policy_->getLatestChunk(chunk)) {
+    bool got;
+    if (fm_sync) {
+      // Inline, deterministic FM (mirrors the MLP path above).
+      got = fm_policy_->predictChunkSync(s_vec, prev_state_, prev_action_, goal,
+                                         chunk);
+    } else {
+      fm_policy_->requestPrediction(s_vec, prev_state_, prev_action_, goal);
+      got = fm_policy_->getLatestChunk(chunk);
+    }
+    if (got) {
       te_chunks_.push_back(std::move(chunk));
       if ((int)te_chunks_.size() > fmc.fm_te_buffer) te_chunks_.pop_front();
       last_chunk_recv_time_ = time;  // fm_chunk_advance reference time
@@ -1374,6 +2047,40 @@ void FlowMPPIPlanner::UpdateFM() {
     }
   } else {
     ws_last_time_ = time;
+  }
+
+  // ---- GPC-CEM: draw N_Flow genuine samples from p_theta ---------------------
+  // Algorithm 1 draws its flow proposals from p_theta(U | x, h); flow matching
+  // gets that diversity from x_0 ~ N(0, I), NOT from additive Gaussian noise.
+  // We reuse the deterministic pipeline's chunk->plan conversion by swapping
+  // q_d_traj_cached_ per sample, so each proposal differs only in its x_0.
+  // Samples whose ODE diverges (the policy reports OOD) are marked invalid and
+  // fall back to the deterministic prior.
+  if (std::getenv("MJPC_FM_GPC") && std::getenv("MJPC_FM_GPC_XSAMP") &&
+      fm_policy_ && fm_policy_->isLoaded() && ws_valid_) {
+    const int nflow = N_fm_ > 0 ? N_fm_ : (num_trajectory_ / 2);
+    gpc_flow_plans_.assign(nflow, fm_nominal_.plan);
+    gpc_flow_valid_.assign(nflow, 0);
+    auto saved_traj = q_d_traj_cached_;
+    spline::TimeSpline saved_plan = fm_nominal_.plan;
+    long base = 0;
+    if (const char* sd_env = std::getenv("MJPC_SEED")) base = std::atol(sd_env) * 1000003L;
+    base += static_cast<long>(time * 1e4) * 65537L;
+    for (int j = 0; j < nflow; ++j) {
+      std::vector<Eigen::VectorXd> c;
+      if (!fm_policy_->predictChunkSync(s_vec, prev_state_, prev_action_, goal, c,
+                                        base + j)) continue;
+      bool ok = !c.empty();
+      for (const auto& v : c) if (!v.allFinite()) { ok = false; break; }
+      if (!ok) continue;
+      q_d_traj_cached_ = c;
+      ApplyWarmstart();
+      gpc_flow_plans_[j] = fm_nominal_.plan;
+      gpc_flow_valid_[j] = 1;
+      fm_nominal_.plan   = saved_plan;   // restore before the next sample
+    }
+    q_d_traj_cached_ = saved_traj;
+    fm_nominal_.plan = saved_plan;
   }
 
   prev_state_ = s_vec;

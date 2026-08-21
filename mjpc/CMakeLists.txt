@@ -106,6 +106,24 @@ add_library(
   tasks/Fr3OodSim2Real/cost_fn.h
   tasks/Fr3OodSim2Real/dynamics.cc
   tasks/Fr3OodSim2Real/dynamics.h
+  tasks/Fr3HGripper/fr3.cc
+  tasks/Fr3HGripper/fr3.h
+  tasks/Fr3HGripper/cost_fn.cc
+  tasks/Fr3HGripper/cost_fn.h
+  tasks/Fr3HGripper/dynamics.cc
+  tasks/Fr3HGripper/dynamics.h
+  tasks/Fr3HGripperCarry/fr3.cc
+  tasks/Fr3HGripperCarry/fr3.h
+  tasks/Fr3HGripperDual/fr3.cc
+  tasks/Fr3HGripperDual/fr3.h
+  tasks/Fr3HGripperPot/fr3.cc
+  tasks/Fr3HGripperPot/fr3.h
+  tasks/Fr3HGripperReach/fr3.cc
+  tasks/Fr3HGripperReach/fr3.h
+  tasks/Fr3Grasp/fr3.cc
+  tasks/Fr3Grasp/fr3.h
+  tasks/Fr3Pick/fr3.cc
+  tasks/Fr3Pick/fr3.h
   tasks/Fr3MazeForce/fr3_maze_force.cc
   tasks/Fr3MazeForce/fr3_maze_force.h
   tasks/Fr3MazeForce/cost_fn.cc
@@ -136,6 +154,13 @@ add_library(
 
   planners/FlowMPPI/policy.cc
   planners/FlowMPPI/policy.h
+
+  # FlowMPPIRpy (FlowMPPI clone with FM goal = pos+rpy, 6-D)
+  planners/FlowMPPIRpy/planner.cc
+  planners/FlowMPPIRpy/planner.h
+
+  planners/FlowMPPIRpy/policy.cc
+  planners/FlowMPPIRpy/policy.h
 
   # FMOnly (pure FM PD, no MPPI sampling)
   planners/FMOnly/planner.cc
@@ -372,6 +397,48 @@ target_link_libraries(
 )
 target_include_directories(fr3_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+add_executable(fr3_reach_eval fr3_reach_eval.cc)
+target_link_libraries(
+  fr3_reach_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(fr3_reach_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Headless SETTLE evaluator (FR3_H_Gripper_Reach): per-target p2p/drift metrics.
+add_executable(pot_eval pot_eval.cc)
+target_link_libraries(
+  pot_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(pot_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+add_executable(hgripper_settle_eval hgripper_settle_eval.cc)
+target_link_libraries(
+  hgripper_settle_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(hgripper_settle_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Headless generic grasp evaluator (SUMO-style contact grasp: object pose + contact + gripper).
+add_executable(grasp_eval grasp_eval.cc)
+target_link_libraries(
+  grasp_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(grasp_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
 # Deterministic, deployment-consistent (decimated-planning async) FR3 reach sweep,
 # mirroring g1sweep/go2sweep. Standalone; does not modify shared FR3 sources.
 add_executable(fr3sweep fr3sweep.cc)
@@ -384,11 +451,27 @@ target_link_libraries(
 )
 target_include_directories(fr3sweep PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
+# fr3record: fr3sweep + live offscreen video capture (adds glfw for the GL context).
+add_executable(fr3record fr3record.cc)
+target_link_libraries(
+  fr3record
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+  glfw
+)
+target_include_directories(fr3record PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
 # FM policy smoke + closed-loop tests (only when ONNX Runtime is available).
 if(MJPC_HAS_ONNXRUNTIME)
   add_executable(fm_policy_test policies/fm_policy_test.cc)
   target_link_libraries(fm_policy_test libmjpc Threads::Threads)
   target_include_directories(fm_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+  add_executable(fm_x0_diversity_test policies/fm_x0_diversity_test.cc)
+  target_link_libraries(fm_x0_diversity_test libmjpc Threads::Threads)
+  target_include_directories(fm_x0_diversity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
   add_executable(fm_closed_loop_test policies/fm_closed_loop_test.cc)
   target_link_libraries(fm_closed_loop_test libmjpc mujoco::mujoco glfw Threads::Threads)
