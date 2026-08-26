@@ -990,7 +990,182 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
       return weights[i];
     };
 
-    if (gpc_cem) {
+    // ================= PROJECTED (TASK / INTERNAL) WEIGHTING =================
+    // OPT-IN: `proj_split` numeric (or MJPC_PROJ_SPLIT). OFF -> every other task
+    // behaves exactly as before.
+    //
+    // Per-arm grouping asks "was MY arm good?", which is the right question while
+    // the arms are independent. Once both hands hold one object the arms are a
+    // closed chain: their disagreement does not move the object, it becomes
+    // internal wrench. So the meaningful split is no longer per arm but per
+    // SUBSPACE - motions that move the object vs motions that only fight.
+    //
+    // C = d(relative twist between the hands)/d(arm dofs), 6 x 14. Its row space
+    // is the internal subspace (motion that violates the closure), its null space
+    // moves the object. Weights are computed separately from the task cost and
+    // from the Internal cost term, and each is applied to its own projection:
+    //     du <- sum_i [ w_task,i P_task + w_int,i P_int ] (cand_i - nominal)
+    // The MPPI update is linear in the weights, so this is a valid generalisation
+    // of the usual weighted mean (it is NOT the standard MPPI fixed point - that
+    // is the point of the experiment).
+    // NOTE approximation: the projection is built in dof/velocity space and applied
+    // to TORQUE perturbations.
+    static const bool proj_use = [&]() {
+      if (const char* e = std::getenv("MJPC_PROJ_SPLIT"); e && e[0])
+        return std::atoi(e) != 0;
+      return GetNumberOrDefault(0.0, model, "proj_split") != 0.0;
+    }();
+    // 사슬이 닫혔을 때만 적용한다. 파지 전에는 두 손이 물체로 연결돼 있지 않아
+    // "폐사슬 위반"이 정의되지 않고, Internal 비용이 0이라 w_int 가 균등해져서
+    // 내부 부분공간(6차원)이 무작위 평균으로 흘러간다 - 실제로 팔이 발산했다
+    // (오차 220 -> 1235 mm). 게이트는 태스크가 publish 하는 phase 파라미터.
+    static const int proj_gate_src =
+        static_cast<int>(GetNumberOrDefault(-1.0, model, "proj_gate_src"));
+    static const double proj_gate_min =
+        GetNumberOrDefault(2.9, model, "proj_gate_min");
+    bool proj_closed = true;
+    if (proj_gate_src >= 0) {
+      proj_closed =
+          proj_gate_src < static_cast<int>(task->parameters.size()) &&
+          task->parameters[proj_gate_src] >= proj_gate_min;
+    }
+    bool proj_done = false;
+    if (proj_use && proj_closed) {
+      // --- arm channels: ctrl -> dof, for actuators driving *fr3_joint* ---
+      std::vector<int> ch, dof;
+      for (int k = 0; k < model->nu; ++k) {
+        int j = model->actuator_trnid[2 * k];
+        if (j < 0) continue;
+        const char* jn = mj_id2name(model, mjOBJ_JOINT, j);
+        if (!jn || !std::strstr(jn, "fr3_joint")) continue;
+        ch.push_back(k);
+        dof.push_back(model->jnt_dofadr[j]);
+      }
+      const int na = static_cast<int>(ch.size());
+      // --- Internal 항의 term index ---
+      int m_int = -1, mm = 0;
+      for (int s = 0; s < model->nsensor; ++s) {
+        if (model->sensor_type[s] != mjSENS_USER) continue;
+        const char* sn = mj_id2name(model, mjOBJ_SENSOR, s);
+        if (sn && !std::strcmp(sn, "Internal")) m_int = mm;
+        ++mm;
+      }
+      const int nterm = mm;
+      if (na >= 2 && m_int >= 0 && na <= 32) {
+        // --- 현재 상태에서 C (6 x na) ---
+        mjData* d0 = data_[0].get();
+        mju_copy(d0->qpos, state.data(), model->nq);
+        mju_copy(d0->qvel, state.data() + model->nq, model->nv);
+        if (model->na > 0)
+          mju_copy(d0->act, state.data() + model->nq + model->nv, model->na);
+        mj_forward(model, d0);
+        int sl = mj_name2id(model, mjOBJ_SITE, "l_gripper_site");
+        int sr = mj_name2id(model, mjOBJ_SITE, "r_gripper_site");
+        if (sl >= 0 && sr >= 0) {
+          std::vector<double> jlp(3 * model->nv), jlr(3 * model->nv),
+              jrp(3 * model->nv), jrr(3 * model->nv);
+          mj_jacSite(model, d0, jlp.data(), jlr.data(), sl);
+          mj_jacSite(model, d0, jrp.data(), jrr.data(), sr);
+          double r[3];
+          for (int q = 0; q < 3; ++q)
+            r[q] = d0->site_xpos[3 * sr + q] - d0->site_xpos[3 * sl + q];
+          std::vector<double> C(6 * na, 0.0);
+          for (int c2 = 0; c2 < na; ++c2) {
+            const int dd = dof[c2];
+            const bool left = ch[c2] < model->nu / 2;
+            if (left) {
+              double w[3] = {jlr[0 * model->nv + dd], jlr[1 * model->nv + dd],
+                             jlr[2 * model->nv + dd]};
+              double wr[3];
+              mju_cross(wr, w, r);
+              for (int q = 0; q < 3; ++q) {
+                C[q * na + c2] = jlp[q * model->nv + dd] + wr[q];
+                C[(3 + q) * na + c2] = w[q];
+              }
+            } else {
+              for (int q = 0; q < 3; ++q) {
+                C[q * na + c2] = -jrp[q * model->nv + dd];
+                C[(3 + q) * na + c2] = -jrr[q * model->nv + dd];
+              }
+            }
+          }
+          // P_int = C^T (C C^T + eps I)^-1 C
+          double CCT[36];
+          mju_mulMatMatT(CCT, C.data(), C.data(), 6, na, 6);
+          for (int q = 0; q < 6; ++q) CCT[q * 6 + q] += 1e-6;
+          std::vector<double> Pint(na * na, 0.0);
+          if (mju_cholFactor(CCT, 6, 0.0)) {
+            std::vector<double> B(6 * na, 0.0);
+            for (int c2 = 0; c2 < na; ++c2) {
+              double rhs[6], sol[6];
+              for (int q = 0; q < 6; ++q) rhs[q] = C[q * na + c2];
+              mju_cholSolve(sol, CCT, rhs, 6);
+              for (int q = 0; q < 6; ++q) B[q * na + c2] = sol[q];
+            }
+            mju_mulMatTMat(Pint.data(), C.data(), B.data(), 6, na, na);
+            // --- 가중치 두 벌 ---
+            std::vector<double> Jt(num_trajectory, 0.0), Ji(num_trajectory, 0.0);
+            double terms[kMaxCostTerms];
+            for (int i = 0; i < num_trajectory; ++i) {
+              const int H = trajectory[i].horizon;
+              for (int t = 0; t < H; ++t) {
+                task->CostTerms(terms, trajectory[i].residual.data() +
+                                           t * task->num_residual);
+                for (int m = 0; m < nterm; ++m)
+                  (m == m_int ? Ji : Jt)[i] += terms[m];
+              }
+              Jt[i] /= std::max(H, 1);
+              Ji[i] /= std::max(H, 1);
+            }
+            std::vector<double> wt(num_trajectory), wi(num_trajectory);
+            for (int pass = 0; pass < 2; ++pass) {
+              auto& J = pass ? Ji : Jt;
+              auto& W = pass ? wi : wt;
+              double mn = *std::min_element(J.begin(), J.end()), sum = 0.0;
+              for (int i = 0; i < num_trajectory; ++i) {
+                W[i] = std::exp(-(J[i] - mn) / mppi_lambda_);
+                sum += W[i];
+              }
+              if (sum > 0.0)
+                for (int i = 0; i < num_trajectory; ++i) W[i] /= sum;
+            }
+            // --- 투영별 업데이트 --- (mtx_ 는 상위 스코프(920행)에서 이미 잡혀 있다;
+            // 여기서 다시 잡으면 같은 스레드 재획득으로 deadlock 예외가 난다)
+            TimeSpline new_plan = mppi_nominal_.plan;
+            std::vector<double> du(na), pi(na);
+            for (int i = 0; i < num_trajectory; ++i) {
+              for (int t = 0; t < mppi_nominal_.plan.Size(); ++t) {
+                auto base_node = new_plan.begin() + t;
+                auto pol_node = mppi_nominal_.plan.begin() + t;
+                auto cand_node = candidate_policy[i].plan.begin() + t;
+                for (int c2 = 0; c2 < na; ++c2)
+                  du[c2] = cand_node->values()[ch[c2]] - pol_node->values()[ch[c2]];
+                mju_mulMatVec(pi.data(), Pint.data(), du.data(), na, na);
+                for (int c2 = 0; c2 < na; ++c2)
+                  base_node->values()[ch[c2]] +=
+                      wt[i] * (du[c2] - pi[c2]) + wi[i] * pi[c2];
+                // 팔이 아닌 채널(그리퍼 등)은 기존 가중 그대로
+                for (int k = 0; k < model->nu; ++k) {
+                  if (std::find(ch.begin(), ch.end(), k) != ch.end()) continue;
+                  base_node->values()[k] +=
+                      wsel(i, k) * (cand_node->values()[k] - pol_node->values()[k]);
+                }
+              }
+            }
+            mppi_nominal_.plan = new_plan;
+            policy.plan = mppi_nominal_.plan;
+            last_winner_was_fm_ = false;
+            proj_done = true;
+          }
+        }
+      }
+      if (!proj_done)
+        std::fprintf(stderr, "[PROJ] 투영 분해 실패 - 기존 업데이트로 폴백\n");
+    }
+
+    if (proj_done) {
+      // 위에서 이미 갱신함
+    } else if (gpc_cem) {
       // ---- GPC-CEM update (Algorithm 1) ------------------------------------
       // mean <- best candidate (also the executed control), Sigma <- elite Var.
       int nel = std::getenv("MJPC_GPC_ELITE")

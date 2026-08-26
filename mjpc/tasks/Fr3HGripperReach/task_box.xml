@@ -1,0 +1,86 @@
+<mujoco model="Fr3HGripperReachBox">
+  <size memory="50M" nuserdata="5"/>
+
+  <custom>
+    <numeric name="agent_planner" data="14"/>           <!-- FlowMPPIRpy, FM OFF -> vanilla MPPI over nu=8 -->
+    <numeric name="agent_horizon" data="0.4"/>
+    <numeric name="agent_timestep" data="0.03"/>   <!-- 0.01 -> 0.03: replan cost T_c must stay well below dt_mppi or U_0 is stale (T_c 20.05 -> 7.29 ms at K=128/16 threads, ratio 2.01 -> 0.24). See tasks/todo_hgripper_reach_settle.md -->
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="128"/>
+    <numeric name="sampling_spline_points" data="16"/>
+    <numeric name="sampling_representation" data="0"/>
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>
+    <numeric name="sampling_dc_noise" data="1"/>          <!-- single-instance sampling (matches .cu) -->
+    <numeric name="sampling_std_per_joint" size="8" data="2 2 2 2 1 1 1 0"/>
+    <!-- Adaptive sampling sigma (this task only; planner treats an absent
+         numeric as OFF so every other task samples exactly as before).
+         Shrinks sigma while the best rollout cost is stalled (converged) and
+         re-expands the moment it rises, so the arm can actually stop instead of
+         random-walking on the noise average. -->
+    <numeric name="sampling_sigma_adapt" data="1"/>
+    <numeric name="sampling_sigma_adapt_min" data="0.05"/>
+    <numeric name="sampling_sigma_adapt_decay" data="0.97"/>
+    <numeric name="sampling_sigma_adapt_thr" data="0.010"/>
+    <numeric name="sampling_sigma_adapt_thr_ori" data="0.017"/>
+    <numeric name="sampling_sigma_adapt_hyst" data="3"/>
+    <numeric name="sampling_sigma_adapt_grow" data="1000"/>
+    <!-- residual [0,6) = position(3) + orientation(3): both must be converged
+         before the noise is allowed to shrink, else the pose freezes off-target. -->
+    <numeric name="sampling_sigma_adapt_res_dim" data="6"/>
+    <!-- per-joint cost separation (MJPC_PERJOINT=1): control-dim per arm joint,
+         in joint_cent order (fr3_joint1..7). gripper (ctrl 7) is skipped. -->
+    <numeric name="perjoint_ctrl" size="7" data="0 1 2 3 4 5 6"/>
+  </custom>
+
+  <statistic extent="1.0" center="0.3 0 0.4"/>
+  <visual>
+    <global azimuth="150" elevation="-20"/>
+    <scale framelength="0.3" framewidth="0.03"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- draggable reach target (mocap 0). quat 0,1,0,0 = gripper-down. -->
+    <body name="target" mocap="true" pos="0.5 0 0.5" quat="0 1 0 0">
+      <geom type="sphere" size="0.025" rgba="0.2 0.6 1 0.5" contype="0" conaffinity="0"/>
+      <site name="target_site" pos="0 0 0" size="0.012" rgba="0.2 0.6 1 1" group="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- user = "norm_type weight w_lower w_upper p_smooth". Order MUST match Residual(). Total = 41.
+         joint_cent / joint_vel / u_reg weights + residual forms match Fr3Reach
+         (nullspace-projected centering, hinged velocity, torque regularization). -->
+    <user name="Reach_pos"   dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Reach_ori"   dim="3" user="2 600000  0 6000000  0.01"/>
+    <user name="joint_cent"  dim="7" user="2 20      0 5000     1"/>
+    <user name="joint_vel"   dim="7" user="2 500     0 5000     0.01"/>
+    <user name="joint_limit" dim="7" user="2 5000000 0 50000000 0.01"/>
+    <!-- null-space joint velocity: N(q)*qdot. ~0 for task-serving motion, so it
+         can be weighted hard without fighting the reach (see fr3.cc term 5b). -->
+    <user name="nullspace_vel" dim="7" user="2 5000    0 5000000  0.01"/>
+    <user name="u_reg"       dim="7" user="2 0.01    0 1        0.01"/>
+
+    <framepos  name="hand"        objtype="site" objname="hand_site"/>
+    <framequat name="hand_quat"   objtype="site" objname="hand_site"/>
+    <framepos  name="target"      objtype="site" objname="target_site"/>
+    <framequat name="target_quat" objtype="site" objname="target_site"/>
+  </sensor>
+
+  <keyframe>
+    <!-- arm(7) finger_slides(3) -->
+    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.5 0 0.088 1 0 0 0"/>
+  </keyframe>
+
+  <include file="fr3_H_gripper_single.xml"/>
+  <include file="box.xml"/>
+</mujoco>

@@ -1,0 +1,200 @@
+<mujoco model="Fr3HGripperPick">
+  <size memory="50M" nuserdata="5"/>
+
+  <custom>
+    <numeric name="agent_planner" data="14"/>           <!-- FlowMPPIRpy, FM OFF -> vanilla MPPI over nu=8 -->
+    <numeric name="agent_horizon" data="0.4"/>
+    <numeric name="agent_timestep" data="0.03"/>   <!-- 0.01 -> 0.03: replan cost T_c must stay well below dt_mppi or U_0 is stale (T_c 20.05 -> 7.29 ms at K=128/16 threads, ratio 2.01 -> 0.24). See tasks/todo_hgripper_reach_settle.md -->
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="64"/>   <!-- 128 -> 64: at K=128 one plan iteration is 11-20 ms (8 threads), so 3 iterations exceed the 30 ms control period and the arm executes a stale plan -->
+    <numeric name="sampling_spline_points" data="16"/>
+    <numeric name="sampling_representation" data="0"/>
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>
+    <numeric name="sampling_dc_noise" data="1"/>          <!-- single-instance sampling (matches .cu) -->
+    <numeric name="sampling_std_per_joint" size="8" data="2 2 2 2 1 1 1 0"/>
+    <!-- Adaptive sampling sigma (this task only; planner treats an absent
+         numeric as OFF so every other task samples exactly as before).
+         Shrinks sigma while the best rollout cost is stalled (converged) and
+         re-expands the moment it rises, so the arm can actually stop instead of
+         random-walking on the noise average. -->
+    <numeric name="sampling_sigma_adapt" data="1"/>
+    <numeric name="sampling_sigma_adapt_min" data="0.05"/>
+    <numeric name="sampling_sigma_adapt_decay" data="0.97"/>
+    <numeric name="sampling_sigma_adapt_thr" data="0.010"/>
+    <numeric name="sampling_sigma_adapt_thr_ori" data="0.017"/>
+    <numeric name="sampling_sigma_adapt_hyst" data="3"/>
+    <numeric name="sampling_sigma_adapt_grow" data="1000"/>
+    <!-- residual [0,6) = position(3) + orientation(3): both must be converged
+         before the noise is allowed to shrink, else the pose freezes off-target. -->
+    <numeric name="sampling_sigma_adapt_res_dim" data="6"/>
+    <!-- per-joint cost separation (MJPC_PERJOINT=1): control-dim per arm joint,
+         in joint_cent order (fr3_joint1..7). gripper (ctrl 7) is skipped. -->
+    <!-- ===== PHASE MACHINE (phases 1-2 only; transport is not implemented) =====
+         This task IS the settled reach task plus the Carry object. The phases do
+         not change the cost structure at all - TransitionLocked just moves the
+         MOCAP TARGET, so Reach_pos 1e6 / Reach_ori 6e5 / joint_limit / adaptive
+         sigma keep doing exactly what they already do well.
+         WHY this instead of patching Carry: control experiment, same box, same
+         7 cm pre-grasp target, same harness - the reach task lands 0.65/1.61/2.12
+         mm and never touches the box (1.2 mm = its own settling), while Carry's
+         Hand_obj/Object_tgt mixture needed Hand_obj x10 + an anchor + an
+         orientation term + horizon/knots/sigma changes and still shoved the box
+         3.9-21 mm.
+           1   -> mocap = object surface + pre_off along the approach axis,
+                  gripper-down and lined up with the box's short axis
+           2   -> mocap walks that point to the grasp point at
+                  v = max(app_vmin, app_alpha * remaining), and only while the
+                  hand is actually on it
+           2.5 -> arrived + settled: squeeze commanded (real-gripper latency)
+           3   -> grasp confirmed; mocap frozen (transport = TODO) -->
+    <numeric name="residual_pick_phase" data="1"/>
+    <numeric name="pick_pre_off" data="0.07"/>
+    <!-- grasp point = object LOCAL ORIGIN + this offset along the approach axis.
+         0 = the origin itself (the gripper reaches that deep: the palm is 145 mm
+         above the pad centre). Positive raises the grasp point toward the top. -->
+    <numeric name="pick_grasp_off" data="0"/>  <!-- grasp point = this far BELOW the object's top surface along the approach axis. Using the object CENTRE instead asks the gripper to descend 87 mm past the top of the box; it cannot (the box is on the floor), so the leftover error is pressed into box+floor at weight 1e6. -->
+    <numeric name="pick_app_alpha" data="1.0"/>
+    <numeric name="pick_app_vmin" data="0.01"/>
+    <numeric name="pick_arrive_tol" data="0.020"/>   <!-- hand-to-guide tolerance for "arrived at the grasp point" (independent of the lag gate below) -->
+    <!-- PHASE-2 lag gate: the guide advances only while the hand is within this.
+         MEASURED: with it OFF (0) the guide outruns the arm, walks all the way to
+         the grasp point (= the object centre) and the arm then dives into the box
+         chasing it - the box was shoved 244 mm and the close condition (hand within
+         arrive_tol of the guide) could never be met. The gate is what makes the
+         descent hand-paced. Phase 3 does NOT use a lag gate (there it deadlocked:
+         the loaded tracking error exceeds the threshold, so the reference froze). -->
+    <numeric name="pick_app_lag" data="0.020"/>      <!-- full guide speed below this lag ... -->
+    <numeric name="pick_app_lag_max" data="0.060"/>  <!-- ... linearly down to zero here. NOT a hard gate: a hard one pins lag at the threshold and s_app stalls at 0.86, so the close never fires. -->
+    <numeric name="pick_enter_tol" data="0.015"/>
+    <numeric name="pick_enter_dwell" data="0.2"/>
+    <numeric name="pick_settle_v" data="0.06"/>
+    <numeric name="pick_settle" data="0.25"/>
+    <numeric name="pick_grasp_hold" data="0.3"/>
+    <numeric name="pick_fail_s" data="2.0"/>
+    <numeric name="pick_firm_lo" data="0.30"/>
+    <numeric name="pick_firm_hi" data="0.95"/>
+    <numeric name="pick_u_close" data="0.08"/>
+    <numeric name="pick_grip_pre" data="0.30"/>
+    <numeric name="pick_lift_clear" data="0.05"/>   <!-- rise this far before any lateral leg, so a sideways goal cannot drag the box along the floor -->
+    <numeric name="pick_carry_v" data="0.25"/>      <!-- m/s cap on the transport reference -->
+    <numeric name="pick_carry_alpha" data="3.0"/>   <!-- transport taper rate 1/s (phase 2 uses its own 1.0): at 1.0 the last 10 cm decayed slowly and a 232 mm carry took 5.1 s -->
+    <numeric name="pick_carry_lag" data="0.020"/>       <!-- full reference speed while the hand is within this -->
+    <numeric name="pick_carry_lag_max" data="0"/>       <!-- 0 = no lag-based slowdown in transport; only the distance taper remains -->   <!-- ... linearly down to ZERO speed here. A hard gate at 20 mm locked itself: with the 0.5 kg box the loaded tracking error exceeds 20 mm, so arc stalled at 20-30 mm and the box never rose (3/4 seeds). -->
+    <numeric name="pick_carry_vmin" data="0.03"/>       <!-- floor for the v <= alpha*remaining taper into the goal -->
+    <numeric name="pick_w_pos_carry" data="5"/>      <!-- x Reach_pos weight in phase 3 only (carrying the uncompensated 0.5 kg left a 40-60 mm offset to a stationary reference) -->
+    <!-- ===== PLACE 베이스라인 (개루프) =====
+         pick_place=1 이면 phase 3의 목표가 "바닥 위 놓을 자리"가 되고, 레퍼런스가
+         지령점에 도달한 뒤 pick_release_dwell 만큼 기다렸다가 접촉을 전혀 보지 않고
+         그리퍼를 연다(= 학습 정책들의 place 방식). pick_z_err 는 컨트롤러가 믿는
+         지지면 높이의 오차: +면 공중에서 놓아 낙하, -면 바닥으로 밀어 넣는다. -->
+    <numeric name="pick_place" data="0"/>
+    <numeric name="pick_place_x" data="0.45"/>
+    <numeric name="pick_place_y" data="0.25"/>
+    <numeric name="pick_z_err" data="0"/>
+    <numeric name="pick_release_dwell" data="0.3"/>
+    <!-- ROLLOUT 기하 불확실성 (planner opt-in). rand_qpos_std > 0 이면 롤아웃마다
+         지정한 qpos 항목을 가우시안으로 흔들어서 시작 상태를 다르게 만든다.
+         여기서는 박스의 z (free joint qpos: 팔 7 + 손가락 3 = 10 부터 시작하므로
+         x=10, y=11, z=12). 지지면 높이를 모른다는 사실을 "물체가 지지면에 대해
+         어디 있는지 모른다"로 표현한 것. 실행 명령은 여전히 토크라 compliance는
+         그대로다. 0 = 끔(기본). -->
+    <!-- 렌치 기저 샘플링: 접촉 구간(phase >= 2.4, 즉 닫기 이후)에서만.
+         residual_pick_phase 가 parameters[0]. 0 = 끔. -->
+    <numeric name="wrench_std" data="0"/>
+    <numeric name="wrench_gate_src" data="0"/>
+    <numeric name="wrench_gate_min" data="2.4"/>
+    <numeric name="rand_qpos_idx" data="12"/>
+    <numeric name="rand_qpos_std" data="0"/>
+    <numeric name="pick_done_tol" data="0.010"/>
+    <numeric name="pick_done_dwell" data="0.3"/>
+    <numeric name="perjoint_ctrl" size="7" data="0 1 2 3 4 5 6"/>
+  </custom>
+
+  <statistic extent="1.0" center="0.3 0 0.4"/>
+  <visual>
+    <global azimuth="150" elevation="-20"/>
+    <scale framelength="0.3" framewidth="0.03"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- draggable reach target (mocap 0). quat 0,1,0,0 = gripper-down. -->
+    <body name="target" mocap="true" pos="0.5 0 0.5" quat="0 1 0 0">
+      <geom type="sphere" size="0.025" rgba="0.2 0.6 1 0.5" contype="0" conaffinity="0"/>
+      <site name="target_site" pos="0 0 0" size="0.012" rgba="0.2 0.6 1 1" group="0"/>
+    </body>
+
+    <!-- WHERE THE OBJECT SHOULD GO (mocap 1, draggable). A translucent ghost of
+         the box itself, so the commanded pose is directly readable. Position only
+         is ever commanded - the grasp fixes the orientation and re-orienting a
+         held object mid-carry is not what this task is about. -->
+    <body name="object_goal" mocap="true" pos="0.45 0 0.32">
+      <geom name="goal_ghost" type="box" size="0.0225 0.045 0.0875"
+            rgba="0.9 0.75 0.1 0.28" contype="0" conaffinity="0"/>
+      <site name="goal_site" pos="0 0 0" size="0.010" rgba="0.9 0.75 0.1 1" group="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- user = "norm_type weight w_lower w_upper p_smooth". Order MUST match Residual(). Total = 41.
+         joint_cent / joint_vel / u_reg weights + residual forms match Fr3Reach
+         (nullspace-projected centering, hinged velocity, torque regularization). -->
+    <user name="Reach_pos"   dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="Reach_ori"   dim="3" user="2 600000  0 6000000  0.01"/>
+    <user name="joint_cent"  dim="7" user="2 20      0 5000     1"/>
+    <user name="joint_vel"   dim="7" user="2 500     0 5000     0.01"/>
+    <user name="joint_limit" dim="7" user="2 5000000 0 50000000 0.01"/>
+    <!-- null-space joint velocity: N(q)*qdot. ~0 for task-serving motion, so it
+         can be weighted hard without fighting the reach (see fr3.cc term 5b). -->
+    <user name="nullspace_vel" dim="7" user="2 5000    0 5000000  0.01"/>
+    <user name="u_reg"       dim="7" user="2 0.01    0 1        0.01"/>
+
+    <!-- gripper (2 terms, 43 dims total). Phase-scripted from
+         residual_pick_phase, and sized so neither can outshout the reach:
+         Reach_pos is 1e6 x 0.05 m = 5e4 at 5 cm, the aperture term is
+         3e4 x 0.3 = 9e3, the squeeze 5e5 x 0.08 = 4e4.
+         Grip_hold charges the COMMAND, not the joint: on a 45 mm box the jaw
+         stalls partway, so a position target goes flat there and the command
+         random-walks until the jaw drifts open. Commanding past the stroke is
+         what makes grip force (kp 1000 / 10 N), same as the real gripper. -->
+    <!-- 3e4. Raising it to 3e5 was measured WORSE: 0/6 grasps vs 4/6 and the box
+         shoved 140-208 mm, because planner 14 has ONE softmax and the aperture
+         term then dilutes the ARM's credit (same failure as Carry at 1e6). The
+         chatter is fixed on the NOISE side instead (see sampling_std_per_joint). -->
+    <user name="Grip_ready"  dim="1" user="2 0       0 5000000  0.01"/>   <!-- weight 0: the gripper is no longer an MPPI channel (std 0); the FSM commands it directly -->
+    <user name="Grip_hold"   dim="1" user="2 0       0 5000000  0.01"/>
+
+    <framepos  name="hand"        objtype="site" objname="hand_site"/>
+    <framequat name="hand_quat"   objtype="site" objname="hand_site"/>
+    <framepos  name="target"      objtype="site" objname="target_site"/>
+    <framequat name="target_quat" objtype="site" objname="target_site"/>
+  </sensor>
+
+  <keyframe>
+    <!-- arm(7) finger_slides(3) -->
+    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.5 0 0.088 1 0 0 0"/>
+  </keyframe>
+
+
+  <!-- GRASP WELD: inactive until the FSM turns it on at the close. The relative
+       pose is written into eq_data at that instant, so nothing snaps. This removes
+       slip by construction - and with it the gripper's ability to relieve an
+       over-constraint if the held object hits the environment, which is the
+       trade-off for a free-space carry. -->
+  <equality>
+    <weld name="grasp_weld" body1="hand" body2="sugar_box" active="false"
+          solref="0.005 1" solimp="0.95 0.99 0.001"/>
+  </equality>
+  <include file="fr3_H_gripper_single.xml"/>
+  <!-- object AFTER the arm: its free joint is the last 7 qpos -->
+  <include file="box.xml"/>
+</mujoco>

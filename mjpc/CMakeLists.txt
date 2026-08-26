@@ -118,6 +118,10 @@ add_library(
   tasks/Fr3HGripperDual/fr3.h
   tasks/Fr3HGripperPot/fr3.cc
   tasks/Fr3HGripperPot/fr3.h
+  tasks/Fr3HGripperPick/fr3.cc
+  tasks/Fr3HGripperPotDual/fr3.cc
+  tasks/Fr3HGripperPotDual/fr3.h
+  tasks/Fr3HGripperPick/fr3.h
   tasks/Fr3HGripperReach/fr3.cc
   tasks/Fr3HGripperReach/fr3.h
   tasks/Fr3Grasp/fr3.cc

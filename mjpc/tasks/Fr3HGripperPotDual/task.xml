@@ -1,0 +1,188 @@
+<mujoco model="Fr3HGripperPotDual">
+  <size memory="100M" nuserdata="5"/>
+
+  <custom>
+    <numeric name="agent_planner" data="14"/>           <!-- FlowMPPIRpy, FM OFF -> vanilla MPPI over nu=16 -->
+    <numeric name="agent_horizon" data="0.4"/>            <!-- headless-tuned: longer H -> smooth stop -->
+    <numeric name="agent_timestep" data="0.03"/>   <!-- replan cost T_c must stay well below dt_mppi. nu=16: T_c 12.33ms at K=128/16thr -> ratio 0.41. -->
+    <numeric name="agent_policy_width" data="0.0035"/>
+    <numeric name="sampling_trajectories" data="128"/>    <!-- headless-tuned: K=128 -->
+    <numeric name="sampling_spline_points" data="16"/>
+    <numeric name="sampling_representation" data="0"/>
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="1000"/>         <!-- if it DIVERGES, raise this (temperature) via MJPC_LAMBDA + watch ESS -->
+    <numeric name="sampling_dc_noise" data="1"/>          <!-- DC noise = stable (per-knot diverges) -->
+    <!-- nu=16: (arm7 + grab_motor) x2. grippers std 0. Compromise torque std: small sigma
+         (0.6/0.3) = 3mm precision but STUCK/jitter on target change; large (2/1) = responsive
+         but ~15mm. This 1/0.5 balances. Real fix for both = adaptive noise (planner change). -->
+    <!-- PER-ARM softmax (this task only; absent numeric = stock single softmax).
+         perarm_ctrl: control channel -> arm group. Actuator order here is
+         l_actuator1..7, l_grab, r_actuator1..7, r_grab -> 0..7 = arm 0, 8..15 = arm 1.
+         perarm_term: user-sensor TERM -> arm group, -1 = shared by both.
+         15 terms: 7 L, 7 R, then collision. -->
+    <numeric name="perarm_groups" data="2"/>
+    <numeric name="perarm_ctrl" size="16" data="0 0 0 0 0 0 0 0  1 1 1 1 1 1 1 1"/>
+    <!-- where each arm's (pos3, ori3) block starts in the residual: L at 0, R at 41.
+         Each arm's adaptive sigma is gated on its OWN error. -->
+    <numeric name="perarm_res_off" size="2" data="0 41"/>
+    <numeric name="perarm_term" size="16" data="0 0 0 0 0 0 0  1 1 1 1 1 1 1  -1 -1"/>
+    <!-- Adaptive sampling sigma. res=[0,6) is L_pos/L_ori; the gate reads
+         consecutive (pos3,ori3) pairs, and with the per-arm split the R block no
+         longer follows L, so only the LEFT arm is covered here. -->
+    <numeric name="sampling_sigma_adapt" data="1"/>
+    <!-- floor 0.10, NOT the single-arm 0.05: this task's base std is half the
+         single-arm one (1/0.5 vs 2/1), so 0.05 x base is too small to hold the
+         pose - measured limit cycle (shrink to floor -> err 0.3->3.1 -> 20x jump
+         -> 11 deg swing -> repeat). 0.10 x base = the same absolute floor as the
+         single-arm task: both arms settle at 0.4-1.8 mm (0.20/0.35 are worse). -->
+    <numeric name="sampling_sigma_adapt_min" data="0.10"/>
+    <numeric name="sampling_sigma_adapt_decay" data="0.97"/>
+    <numeric name="sampling_sigma_adapt_thr" data="0.010"/>
+    <numeric name="sampling_sigma_adapt_thr_ori" data="0.017"/>
+    <numeric name="sampling_sigma_adapt_hyst" data="3"/>
+    <numeric name="sampling_sigma_adapt_grow" data="1000"/>
+    <numeric name="sampling_sigma_adapt_res_dim" data="6"/>   <!-- one (pos3,ori3) pair per group -->
+    <!-- ================= PHASE MACHINE (pot, 양팔) =================
+         Pick(한팔)에서 확정된 구조 이식: cost는 Dual reach 그대로이고 phase는
+         mocap 타겟만 옮긴다. 냄비는 하나이므로 phase는 쌍 단위(전이 조건 AND)이고,
+         transport에서 두 손 레퍼런스가 같은 delta로 움직여 대칭 리프트가 구조적으로
+         보장된다. 그리퍼는 이미 비샘플링(std 0)이고, FSM이 ctrlrange 클램프로 직접
+         지령한다. 파지는 양쪽 hand<->pot weld(안 A). -->
+    <!-- 파지 시점의 두 손 상대 포즈(왼손 프레임에서 본 오른손) + phase.
+         각 residual_* numeric 은 파라미터 하나이며 선언 순서대로 들어간다. -->
+    <numeric name="residual_rel_px" data="0"/>
+    <numeric name="residual_rel_py" data="0"/>
+    <numeric name="residual_rel_pz" data="0"/>
+    <numeric name="residual_rel_qw" data="1"/>
+    <numeric name="residual_rel_qx" data="0"/>
+    <numeric name="residual_rel_qy" data="0"/>
+    <numeric name="residual_rel_qz" data="0"/>
+    <numeric name="residual_pd_phase" data="1"/>
+    <!-- 투영(물체운동/내부) 가중: 사슬이 닫힌 뒤에만. gate_src = phase 파라미터 index. -->
+    <numeric name="proj_split" data="0"/>
+    <numeric name="proj_gate_src" data="7"/>
+    <numeric name="proj_gate_min" data="2.9"/>
+    <numeric name="pd_pre_off" data="0.07"/>       <!-- 파지 프레임 표면 기준 여유 -->
+    <numeric name="pd_grasp_off" data="0"/>        <!-- 파지점 = pot_grasp_l/r 사이트 원점 -->
+    <numeric name="pd_app_alpha" data="1.0"/>
+    <numeric name="pd_app_vmin" data="0.01"/>
+    <numeric name="pd_app_lag" data="0.020"/>      <!-- 전속 구간 -->
+    <numeric name="pd_app_lag_max" data="0.060"/>  <!-- 여기서 0 (하드 게이트 금지) -->
+    <numeric name="pd_arrive_tol" data="0.020"/>   <!-- 도달 판정(게이트와 별 파라미터) -->
+    <numeric name="pd_enter_tol" data="0.015"/>
+    <numeric name="pd_enter_dwell" data="0.2"/>
+    <numeric name="pd_settle_v" data="0.06"/>
+    <numeric name="pd_settle" data="0.25"/>
+    <numeric name="pd_grasp_hold" data="0.3"/>     <!-- 이 시간 뒤 weld ON -->
+    <numeric name="pd_fail_s" data="2.0"/>
+    <numeric name="pd_u_close" data="0.08"/>
+    <numeric name="pd_grip_pre" data="0.30"/>
+    <numeric name="pd_lift_clear" data="0.05"/>
+    <numeric name="pd_carry_v" data="0.25"/>
+    <numeric name="pd_carry_alpha" data="3.0"/>
+    <numeric name="pd_carry_vmin" data="0.03"/>
+    <numeric name="pd_rot_w" data="0.3"/>          <!-- 회전 지령 속도 상한 rad/s -->
+    <numeric name="pd_rot_alpha" data="2.0"/>      <!-- 남은 각도 비례 감속 1/s -->
+    <numeric name="pd_done_ang" data="0.10"/>      <!-- 완료 판정 각오차 rad -->
+    <numeric name="pd_done_tol" data="0.010"/>
+    <numeric name="pd_done_dwell" data="0.3"/>
+    <numeric name="pd_w_pos_carry" data="5"/>      <!-- phase 3에서 L_pos/R_pos x배 (냄비 1.0 kg 미보상 부하) -->
+    <numeric name="sampling_std_per_joint" size="16" data="1 1 1 1 0.5 0.5 0.5 0  1 1 1 1 0.5 0.5 0.5 0"/>
+    <!-- per-joint cost separation (MJPC_PERJOINT=1): control-dim per arm joint,
+         in joint_cent order (l1-7, r1-7). grippers (ctrl 7,15) are skipped. -->
+    <numeric name="perjoint_ctrl" size="14" data="0 1 2 3 4 5 6  8 9 10 11 12 13 14"/>
+  </custom>
+
+  <statistic extent="1.0" center="0.3 0 0.4"/>
+  <visual>
+    <global azimuth="150" elevation="-20"/>
+    <scale framelength="0.3" framewidth="0.03"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- per-arm draggable targets (mocap 0 = left, 1 = right). quat 0,1,0,0 = gripper-down. -->
+    <body name="l_target" mocap="true" pos="0.5 0.3 0.5" quat="0 1 0 0">
+      <geom type="sphere" size="0.025" rgba="0.2 0.6 1 0.5" contype="0" conaffinity="0"/>
+      <site name="l_target_site" pos="0 0 0" size="0.012" rgba="0.2 0.6 1 1" group="0"/>
+    </body>
+    <body name="r_target" mocap="true" pos="0.5 -0.3 0.5" quat="0 1 0 0">
+      <geom type="sphere" size="0.025" rgba="1 0.3 0.3 0.5" contype="0" conaffinity="0"/>
+      <site name="r_target_site" pos="0 0 0" size="0.012" rgba="1 0.3 0.3 1" group="0"/>
+    </body>
+
+    <!-- 냄비 목표 (mocap 2, 드래그 가능). 위치만 지령한다. -->
+    <body name="pot_goal" mocap="true" pos="0.55 0 0.32" quat="0.5000000 0.0000000 0.0000000 0.8660254">
+      <geom name="pot_goal_ghost" type="mesh" mesh="pot_mesh" contype="0" conaffinity="0"
+            group="2" rgba="0.3 0.9 0.5 0.25"/>
+      <site name="pot_goal_site" pos="0 0 0" size="0.012" rgba="0.3 0.9 0.5 1" group="0"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- user = "norm_type weight w_lower w_upper p_smooth". Order MUST match Residual(). Total = 41. -->
+    <!-- Order MUST match Residual(). Terms are separated PER ARM so the planner can
+         give each arm its own softmax weight (perarm_* numerics below): with one
+         shared scalar cost, a good left-arm sample and a bad right-arm sample get
+         the same weight and each arm becomes noise for the other.
+         L block = R block = exactly the single-arm Reach term set (41 each).
+         Total = 41 + 41 + 1 = 83. -->
+    <user name="L_pos"    dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="L_ori"    dim="3" user="2 600000  0 6000000  0.01"/>
+    <user name="L_cent"   dim="7" user="2 20      0 5000     1"/>
+    <user name="L_nsvel"  dim="7" user="2 5000    0 5000000  0.01"/>
+    <user name="L_vel"    dim="7" user="2 500     0 5000     0.01"/>
+    <user name="L_limit"  dim="7" user="2 5000000 0 50000000 0.01"/>
+    <user name="L_ureg"   dim="7" user="2 0.01    0 1        0.01"/>
+    <user name="R_pos"    dim="3" user="2 1000000 0 5000000  0.01"/>
+    <user name="R_ori"    dim="3" user="2 600000  0 6000000  0.01"/>
+    <user name="R_cent"   dim="7" user="2 20      0 5000     1"/>
+    <user name="R_nsvel"  dim="7" user="2 5000    0 5000000  0.01"/>
+    <user name="R_vel"    dim="7" user="2 500     0 5000     0.01"/>
+    <user name="R_limit"  dim="7" user="2 5000000 0 50000000 0.01"/>
+    <user name="R_ureg"   dim="7" user="2 0.01    0 1        0.01"/>
+    <!-- the ONLY coupling between the arms; shared by both per-arm costs -->
+    <user name="collision" dim="1" user="2 500000 0 20000000 0.01"/>
+    <!-- 폐사슬 내부 편차(내부 렌치의 운동학적 대응물): 두 손의 상대 포즈가 파지
+         시점 값에서 벗어난 양. 3(위치) + 3(자세). weight 0 = 기본 비활성.
+         전제 검증용: 단일 softmax에서는 이 항의 weight를 올려도 아무 변화가 없어야
+         한다(task 항의 롤아웃 간 변동이 훨씬 커서 순위를 지배하므로). -->
+    <user name="Internal" dim="6" user="2 0 0 50000000 0.01"/>
+
+    <framepos  name="l_hand"        objtype="site" objname="l_hand_site"/>
+    <framequat name="l_hand_quat"   objtype="site" objname="l_hand_site"/>
+    <framepos  name="r_hand"        objtype="site" objname="r_hand_site"/>
+    <framequat name="r_hand_quat"   objtype="site" objname="r_hand_site"/>
+    <framepos  name="l_target"      objtype="site" objname="l_target_site"/>
+    <framequat name="l_target_quat" objtype="site" objname="l_target_site"/>
+    <framepos  name="r_target"      objtype="site" objname="r_target_site"/>
+    <framequat name="r_target_quat" objtype="site" objname="r_target_site"/>
+  </sensor>
+
+  <keyframe>
+    <!-- l_arm(7) l_slides(3) r_arm(7) r_slides(3)  pot free(xyz + wxyz) -->
+    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.55 0 0.12  0.7071068 0 0 0.7071068"/>
+  </keyframe>
+
+
+  <!-- 파지 = weld (안 A: 양쪽 다). 닫기 후 pd_grasp_hold 뒤에 FSM이 켜고, 그 순간의
+       상대 포즈를 eq_data에 써서 스냅이 없다. 양팔+냄비가 닫힌 사슬이 되므로 두 팔의
+       추종오차 차이가 내부 구속력으로 간다 - solref를 무르게 둬서 완화한다. -->
+  <equality>
+    <weld name="grasp_weld_l" body1="l_hand" body2="pot" active="false"
+          solref="0.02 1" solimp="0.9 0.95 0.001"/>
+    <weld name="grasp_weld_r" body1="r_hand" body2="pot" active="false"
+          solref="0.02 1" solimp="0.9 0.95 0.001"/>
+  </equality>
+  <include file="fr3_H_gripper_dual.xml"/>
+  <!-- pot AFTER the arms: its free joint is then the last 7 qpos entries. -->
+  <include file="pot.xml"/>
+</mujoco>

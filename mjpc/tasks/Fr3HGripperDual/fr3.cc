@@ -74,6 +74,14 @@ void ArmNullSpaceProjector(const mjModel* model, const mjData* data,
 
 
 std::string FR3HGripperDual::XmlPath() const {
+  // MJPC_DUAL_PRIM=1 loads the primitive-collision variant: same costs and
+  // numerics, but both grippers drop their mesh colliders (48 geoms, 342,606 hull
+  // vertices) for capsules/boxes/spheres and one driven dof each. Measured
+  // 52.9 -> 38.3 us per step; the jaw geometry is unchanged (108.2 -> 8.2 mm) so
+  // every grasp threshold still applies. nu stays 16, so the per-arm softmax
+  // numerics need no edit.
+  if (const char* e = std::getenv("MJPC_DUAL_PRIM"); e && e[0] && std::atoi(e))
+    return GetModelPath("Fr3HGripperDual/task_prim.xml");
   return GetModelPath("Fr3HGripperDual/task.xml");
 }
 std::string FR3HGripperDual::Name() const { return "FR3_H_Gripper_Dual"; }

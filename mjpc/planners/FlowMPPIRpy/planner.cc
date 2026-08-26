@@ -332,6 +332,39 @@ int FlowMPPIRpyPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
   // resample nominal policy to current time
   this->UpdateNominalPolicy(horizon);
 
+  // ---- wrench-basis sampling: Jᵀ at the current state (once per replan) ----
+  static const double wrench_std_cfg = [&]() {
+    if (const char* e = std::getenv("MJPC_WRENCH_STD"); e && e[0])
+      return std::atof(e);
+    return GetNumberOrDefault(0.0, model, "wrench_std");
+  }();
+  if (wrench_std_cfg > 0.0 && !data_.empty()) {
+    mjData* d0 = data_[0].get();
+    mju_copy(d0->qpos, state.data(), model->nq);
+    mju_copy(d0->qvel, state.data() + model->nq, model->nv);
+    if (model->na > 0)
+      mju_copy(d0->act, state.data() + model->nq + model->nv, model->na);
+    mj_forward(model, d0);
+    int sid = mj_name2id(model, mjOBJ_SITE, "gripper_site");
+    if (sid < 0) sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
+    if (sid >= 0) {
+      std::vector<double> jp(3 * model->nv), jr(3 * model->nv);
+      mj_jacSite(model, d0, jp.data(), jr.data(), sid);
+      jt_wrench_.assign(model->nu * 6, 0.0);
+      for (int k = 0; k < model->nu; ++k) {
+        int j = model->actuator_trnid[2 * k];
+        if (j < 0) continue;
+        const char* jn = mj_id2name(model, mjOBJ_JOINT, j);
+        if (!jn || !std::strstr(jn, "fr3_joint")) continue;   // 팔 관절만
+        const int dd = model->jnt_dofadr[j];
+        for (int c2 = 0; c2 < 3; ++c2) {
+          jt_wrench_[k * 6 + c2] = jp[c2 * model->nv + dd];
+          jt_wrench_[k * 6 + 3 + c2] = jr[c2 * model->nv + dd];
+        }
+      }
+    }
+  }
+
   // Mode select.
   //   "wta"  (default, legacy): ApplyWarmstart writes FM PD torques into
   //          fm_nominal_.plan, FM-group rollouts use it, winner-take-all
@@ -1208,11 +1241,44 @@ void FlowMPPIRpyPlanner::AddNoiseToPolicy(double start_time, int i, double scale
     return;
   }
 
+  // ---- wrench-basis perturbation (opt-in): δτ += Jᵀ δF, DC per rollout ----
+  // 관절 공간 iid 노이즈로는 "더 누르기 / 힘 빼기" 같은 일관된 작업공간 힘 패턴이
+  // 거의 안 뽑힌다. 접촉 구간에서 그게 정확히 필요한 탐색 방향이라 기저에 추가한다.
+  static const double wrench_std = [&]() {
+    if (const char* e = std::getenv("MJPC_WRENCH_STD"); e && e[0])
+      return std::atof(e);
+    return GetNumberOrDefault(0.0, model, "wrench_std");
+  }();
+  // 접촉이 있을 때만 켠다. 자유공간에서는 Jᵀ δF 가 그저 상관된 토크 노이즈라
+  // 접근을 방해한다(측정: 파지 자체 실패, min_gap 130 mm). 게이트는 태스크가
+  // publish 하는 phase 파라미터.
+  static const int wgate_src =
+      static_cast<int>(GetNumberOrDefault(-1.0, model, "wrench_gate_src"));
+  static const double wgate_min =
+      GetNumberOrDefault(2.4, model, "wrench_gate_min");
+  bool w_on = wrench_std > 0.0;
+  if (w_on && wgate_src >= 0) {
+    w_on = wgate_src < static_cast<int>(task->parameters.size()) &&
+           task->parameters[wgate_src] >= wgate_min;
+  }
+  double dtau_w[64] = {0};
+  if (w_on && static_cast<int>(jt_wrench_.size()) == model->nu * 6) {
+    double dF[6];
+    for (int c2 = 0; c2 < 6; ++c2)
+      dF[c2] = absl::Gaussian<double>(gen_, 0.0,
+                                      c2 < 3 ? wrench_std : 0.1 * wrench_std);
+    for (int k = 0; k < model->nu; ++k) {
+      double t = 0.0;
+      for (int c2 = 0; c2 < 6; ++c2) t += jt_wrench_[k * 6 + c2] * dF[c2];
+      dtau_w[k] = t;
+    }
+  }
+
   if (noise_dc_per_rollout_) {
     // One Gaussian per (rollout, joint), broadcast to every knot.
     double dc[64];
     for (int k = 0; k < model->nu; k++) {
-      dc[k] = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
+      dc[k] = absl::Gaussian<double>(gen_, 0.0, sigma[k]) + dtau_w[k];
     }
     for (const TimeSpline::Node& node : candidate_policy[i].plan) {
       for (int k = 0; k < model->nu; k++) {
@@ -1225,7 +1291,7 @@ void FlowMPPIRpyPlanner::AddNoiseToPolicy(double start_time, int i, double scale
     for (const TimeSpline::Node& node : candidate_policy[i].plan) {
       for (int k = 0; k < model->nu; k++) {
         double noise = absl::Gaussian<double>(gen_, 0.0, sigma[k]);
-        node.values()[k] += noise;
+        node.values()[k] += noise + dtau_w[k];
       }
       Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
     }
@@ -1321,10 +1387,44 @@ void FlowMPPIRpyPlanner::Rollouts(int num_trajectory, int horizon,
         candidate_policy[i].Action(action, state, time);
       };
 
+      // ----- per-rollout GEOMETRY UNCERTAINTY (opt-in) -----
+      // OFF unless the task declares `rand_qpos_std` > 0. Each rollout starts
+      // from a state whose designated qpos entry is perturbed, so the rollout set
+      // spans the plausible geometries instead of committing to one. For a
+      // placement task the entry is the object's height: the planner does not
+      // know where the object sits relative to the support, and a plan that is
+      // good across the whole spread is one that does not slam or press.
+      // The perturbation is on the ROLLOUT's initial state only - the executed
+      // command is still a torque, so nothing about the compliance changes.
+      static const double rand_std = [&]() {
+        if (const char* e = std::getenv("MJPC_RAND_QPOS_STD"); e && e[0])
+          return std::atof(e);
+        return GetNumberOrDefault(0.0, model, "rand_qpos_std");
+      }();
+      static const int rand_idx =
+          static_cast<int>(GetNumberOrDefault(-1.0, model, "rand_qpos_idx"));
+      std::vector<double> state_i;
+      const double* state_ptr = state.data();
+      if (rand_std > 0.0 && rand_idx >= 0 && rand_idx < model->nq) {
+        // 재현 가능한 시드 (노이즈 샘플링과 같은 방식: MJPC_SEED, 시각, 롤아웃 i)
+        uint64_t rs = 0ull;
+        if (const char* e = std::getenv("MJPC_SEED"); e && e[0])
+          rs = static_cast<uint64_t>(std::atoi(e));
+        uint64_t sd = (rs + 7ull) * 2246822519ull +
+                      static_cast<uint64_t>(time * 1e6) * 3266489917ull +
+                      static_cast<uint64_t>(i) * 668265263ull;
+        std::seed_seq seq{static_cast<unsigned>(sd & 0xFFFFFFFFu),
+                          static_cast<unsigned>(sd >> 32)};
+        absl::BitGen g(seq);
+        state_i.assign(state.begin(), state.end());
+        state_i[rand_idx] += absl::Gaussian<double>(g, 0.0, rand_std);
+        state_ptr = state_i.data();
+      }
+
       // policy rollout
       s.trajectory[i].Rollout(
           sample_policy_i, task, model, s.data_[ThreadPool::WorkerId()].get(),
-          state.data(), time, mocap.data(), userdata.data(), horizon);
+          state_ptr, time, mocap.data(), userdata.data(), horizon);
     });
   }
   pool.WaitCount(count_before + num_trajectory);

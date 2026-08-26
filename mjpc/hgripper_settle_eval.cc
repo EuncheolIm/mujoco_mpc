@@ -25,6 +25,7 @@
 // Everything else (planner, lambda, cost scales) comes from the usual env vars.
 // Standalone; modifies no shared file.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -221,7 +222,15 @@ int main(int argc, char** argv) {
   agent.estimator_enabled = false;
   agent.Initialize(model);
   agent.Allocate();
-  agent.Reset(data->ctrl);
+  // MJPC_SETTLE_RESET_NULL=1: reset WITHOUT the current ctrl. Passing ctrl
+  // bypasses the planner's nominal seeding, so the first control before the first
+  // plan is a zero nominal and the arm jerks - the same cold-start artifact
+  // documented for g1record/go2record (G1_GO2_EXPERIMENT.md 7). The GUI does not
+  // have it. Default keeps the old behaviour so earlier numbers stay reproducible.
+  if (const char* e = std::getenv("MJPC_SETTLE_RESET_NULL"); e && e[0] && std::atoi(e))
+    agent.Reset();
+  else
+    agent.Reset(data->ctrl);
   agent.plan_enabled = true;
   g_task = agent.ActiveTask();
   mjcb_sensor = &residual_callback;
@@ -316,7 +325,9 @@ int main(int argc, char** argv) {
   int ob_site = mj_name2id(model, mjOBJ_SITE, "object_site");
   int grab_act = mj_name2id(model, mjOBJ_ACTUATOR, "grab_motor");
   double z0 = (ob_body >= 0) ? data->xpos[3 * ob_body + 2] : 0.0;
-  double lift_max = 0.0, hold_time = 0.0, min_gap = 1e9;
+  double lift_max = 0.0, hold_time = 0.0, min_gap = 1e9, obj_move = 0.0;
+  double obj_p0[3] = {0, 0, 0};
+  if (ob_body >= 0) mju_copy3(obj_p0, data->xpos + 3 * ob_body);
   int close_events = 0, last_cmd = -1;
 
   bool all_pass = true;
@@ -346,7 +357,15 @@ int main(int argc, char** argv) {
       mj_step(model, data);
       if (i % steps_per_plan == 0) {
         auto t0 = std::chrono::steady_clock::now();
-        agent.PlanIteration(&pool);
+        // MJPC_SETTLE_ITERS: the GUI's planner thread runs continuously - at a
+        // 3.6 ms replan it gets ~5 iterations per 20 ms of sim, while this loop
+        // does 1. Default 1 = old behaviour.
+        static const int iters = []() {
+          if (const char* e = std::getenv("MJPC_SETTLE_ITERS"); e && e[0])
+            return std::max(1, std::atoi(e));
+          return 1;
+        }();
+        for (int it = 0; it < iters; it++) agent.PlanIteration(&pool);
         plan_ms_sum += std::chrono::duration<double, std::milli>(
                            std::chrono::steady_clock::now() - t0).count();
         plan_ms_n++;
@@ -356,6 +375,10 @@ int main(int argc, char** argv) {
       if (ob_body >= 0) {
         double lift = (data->xpos[3 * ob_body + 2] - z0) * 1000.0;
         if (lift > lift_max) lift_max = lift;
+        // how far the object was SHOVED - the control experiment needs this, not
+        // just how high it rose
+        obj_move = mju_max(obj_move,
+                           1000.0 * mju_dist3(data->xpos + 3 * ob_body, obj_p0));
         int nco_pad = 0;
         for (int c = 0; c < data->ncon; c++) {
           int b1 = model->geom_bodyid[data->contact[c].geom1];
@@ -462,9 +485,9 @@ int main(int argc, char** argv) {
   if (ob_body >= 0) {
     std::fprintf(stderr,
                  "[GRASP] lift_max=%.1fmm  hold_time=%.2fs  min_gap=%.1fmm  "
-                 "close_events=%d\n",
+                 "close_events=%d  obj_move=%.1fmm\n",
                  lift_max, hold_time, (min_gap > 1e8 ? -1.0 : min_gap),
-                 close_events);
+                 close_events, obj_move);
   }
   std::fprintf(stderr, "[SETTLE] task=%s tag=%s seed=%ld segments=%zu -> %s\n",
                task_name.c_str(), tag, seed, targets.size(),

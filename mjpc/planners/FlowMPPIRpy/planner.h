@@ -270,6 +270,14 @@ mjpc::spline::SplineInterpolation interpolation_ =
   Eigen::VectorXd prev_action_;
   bool prev_init_ = false;
   mjData* ws_data_ = nullptr;
+  // WRENCH-BASIS SAMPLING (opt-in, `wrench_std` numeric / MJPC_WRENCH_STD).
+  // Jᵀ at the CURRENT state for the tool site, laid out per control channel:
+  // jt_wrench_[k*6 + c] maps a unit wrench component c to a torque on channel k.
+  // Sampling δF in this basis makes coherent task-space force perturbations
+  // ("press harder", "let go a little") first-class instead of something that
+  // joint-space iid noise almost never produces. The executed command is still a
+  // torque, so nothing about the compliance changes.
+  std::vector<double> jt_wrench_;
   std::vector<Eigen::VectorXd> q_d_traj_cached_;  // H x 7
   // GPC-CEM: N_Flow proposals drawn from p_theta by randomising the flow ODE's
   // initial condition x_0 ~ N(0, I).  Each entry is a full plan built through the

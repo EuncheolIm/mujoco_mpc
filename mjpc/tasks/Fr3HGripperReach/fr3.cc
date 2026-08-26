@@ -88,6 +88,10 @@ void ArmNullSpaceProjector(const mjModel* model, const mjData* data,
 }  // namespace
 
 std::string FR3HGripperReach::XmlPath() const {
+  // MJPC_REACH_BOX=1: same task plus the Carry task's sugar box (control
+  // experiment for the phase-1 pre-grasp reach). Default is untouched.
+  if (const char* e = std::getenv("MJPC_REACH_BOX"); e && e[0] && std::atoi(e))
+    return GetModelPath("Fr3HGripperReach/task_box.xml");
   return GetModelPath("Fr3HGripperReach/task.xml");
 }
 std::string FR3HGripperReach::Name() const { return "FR3_H_Gripper_Reach"; }

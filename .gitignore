@@ -52,3 +52,7 @@ results/
 videos/
 *.pth
 mjpc/checkpoints/**/*.pth
+
+# 실험 로그/영상 (커밋 대상 아님)
+*.log
+*.gif
