@@ -34,7 +34,7 @@
 #include <glfw_adapter.h>
 #include "mjpc/array_safety.h"
 #include "mjpc/agent.h"
-#include "mjpc/policies/fm_config.h"
+#include "mjpc/tasks/G1Arm/safety_filter.h"
 #include "mjpc/tasks/Fr3ObstacleQ/fr3_experiment.h"
 #include "mjpc/estimators/estimator.h"
 #include "mjpc/simulate.h"  // mjpc fork
@@ -95,6 +95,10 @@ void controller(const mjModel* m, mjData* data) {
     sim->agent->ActivePlanner().ActionFromPolicy(
         data->ctrl, &sim->agent->state.state()[0],
         sim->agent->state.time());
+    // 실행 직전 자가충돌 필터. task 가 numeric "sf_enable" 을 선언했을 때만
+    // 동작한다. cost 는 회피 방향을 줄 뿐 위반을 막지 못하므로, 계획이
+    // 무엇을 내든 여기서 접근 속도를 제한한다.
+    mjpc::G1Safety::Filter(m, data, data->ctrl);
   }
   // --- gripper auto on/off primitive (Fr3HGripper*): OFF by default so MPPI's sampled
   // gripper ctrl stands (MPPI chooses open/close). Set MJPC_GRIP_AUTO=1 to instead use the
@@ -422,7 +426,7 @@ void PhysicsLoop(mj::Simulate& sim) {
         // interactive "Plan" button). Only affects runs with MJPC_AUTORUN set.
         {
           const char* ar = std::getenv("MJPC_AUTORUN");
-          bool aron = ar ? (std::atoi(ar) != 0) : mjpc::GetFMConfig().autorun;
+          bool aron = ar ? (std::atoi(ar) != 0) : false;
           if (aron) {
             sim.agent->plan_enabled = true;
             sim.agent->action_enabled = true;
@@ -576,7 +580,7 @@ void PhysicsLoop(mj::Simulate& sim) {
     // planner warms up on the true initial state, then unpauses here once.
     static const double autorun_delay_s = []() {
       const char* a = std::getenv("MJPC_AUTORUN");
-      bool on = a ? (std::atoi(a) != 0) : mjpc::GetFMConfig().autorun;
+      bool on = a ? (std::atoi(a) != 0) : false;
       if (!on) return -1.0;
       const char* e = std::getenv("MJPC_AUTORUN_DELAY");
       double delay = e ? std::atof(e) : 3.0;
@@ -715,8 +719,7 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
   // run — an instant start executes unconverged early actions that put the arm
   // on a different trajectory. MJPC_AUTORUN_DELAY=0 restores the instant start.
   const char* autorun = std::getenv("MJPC_AUTORUN");
-  bool autorun_on = autorun ? (std::atoi(autorun) != 0)
-                            : mjpc::GetFMConfig().autorun;
+  bool autorun_on = autorun && std::atoi(autorun) != 0;
   double autorun_delay = 3.0;
   if (const char* e = std::getenv("MJPC_AUTORUN_DELAY")) autorun_delay = std::atof(e);
   sim->run = (autorun_on && autorun_delay <= 0.0) ? 1 : 0;

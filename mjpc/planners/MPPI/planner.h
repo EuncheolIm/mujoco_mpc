@@ -204,6 +204,12 @@ mjpc::spline::SplineInterpolation interpolation_ =
   int    n_diffuse_init_         = 1;
   double traj_diffuse_factor_    = 1.0;
   bool   first_plan_             = true;
+
+
+  // per-arm softmax
+  int perarm_groups_ = 0;
+  std::vector<int> perarm_ctrl_;
+  std::vector<int> perarm_term_;
 };
 
 }  // namespace mjpc

@@ -116,6 +116,39 @@ void MPPIPlanner::Initialize(mjModel* model, const Task& task) {
                                 model->numeric_data + sj_adr + sj_size);
   }
 
+    // per-arm softmax. numeric이 없으면 기존 동작 그대로.
+  perarm_groups_ =
+      static_cast<int>(GetNumberOrDefault(0.0, model, "perarm_groups"));
+  if (const char* e = std::getenv("MJPC_PERARM_GROUPS"); e && e[0])
+    perarm_groups_ = std::atoi(e);
+  perarm_ctrl_.clear();
+  perarm_term_.clear();
+  if (perarm_groups_ > 1) {
+    int cid = mj_name2id(model, mjOBJ_NUMERIC, "perarm_ctrl");
+    int tid = mj_name2id(model, mjOBJ_NUMERIC, "perarm_term");
+    if (cid >= 0 && model->numeric_size[cid] == model->nu) {
+      const double* d = model->numeric_data + model->numeric_adr[cid];
+      for (int k = 0; k < model->nu; ++k)
+        perarm_ctrl_.push_back(static_cast<int>(d[k]));
+    }
+    if (tid >= 0) {
+      const double* d = model->numeric_data + model->numeric_adr[tid];
+      for (int k = 0; k < model->numeric_size[tid]; ++k)
+        perarm_term_.push_back(static_cast<int>(d[k]));
+    }
+    if (perarm_ctrl_.empty() || perarm_term_.empty()) {
+      perarm_groups_ = 0;
+      std::fprintf(stderr,
+                   "[MPPI] per-arm softmax DISABLED "
+                   "(need perarm_ctrl[nu], perarm_term[#terms])\n");
+    } else {
+      std::fprintf(stderr,
+                   "[MPPI] per-arm softmax ON: %d groups, %zu ctrl, %zu terms\n",
+                   perarm_groups_, perarm_ctrl_.size(), perarm_term_.size());
+    }
+  }
+
+
   // DIAL-MPC-style diffusion knobs (default = 1 → vanilla MPPI behaviour).
   // traj_diffuse_factor matches DIAL-MPC's per-iter geometric σ decay:
   //   σ(i) = saved_exploration × traj_diffuse_factor^i.
@@ -253,6 +286,55 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
 
   for (int i = 0; i < num_trajectory; ++i) weights[i] /= sum_weights;    
 
+    // per-arm softmax. 그룹마다 자기 cost 항만 모아 따로 softmax를 돌린다.
+  // perarm_groups <= 1 이면 wg 가 비고, 아래 wsel 이 공용 weights 로 떨어진다.
+  std::vector<std::vector<double>> wg;
+  if (perarm_groups_ > 1) {
+    const int G = perarm_groups_;
+    const int nterm = static_cast<int>(perarm_term_.size());
+    wg.assign(G, std::vector<double>(num_trajectory, 0.0));
+    std::vector<std::vector<double>> Jg(G,
+                                        std::vector<double>(num_trajectory, 0.0));
+    double terms[kMaxCostTerms];
+    for (int i = 0; i < num_trajectory; ++i) {
+      const int H = trajectory[i].horizon;
+      for (int t = 0; t < H; ++t) {
+        task->CostTerms(terms,
+                        trajectory[i].residual.data() + t * task->num_residual);
+        for (int m = 0; m < nterm; ++m) {
+          int g = perarm_term_[m];
+          if (g < 0) {
+            for (int gg = 0; gg < G; ++gg) Jg[gg][i] += terms[m];   // 공유 항
+          } else if (g < G) {
+            Jg[g][i] += terms[m];
+          }
+        }
+      }
+      for (int g = 0; g < G; ++g) Jg[g][i] /= std::max(H, 1);
+    }
+    for (int g = 0; g < G; ++g) {
+      double mn = *std::min_element(Jg[g].begin(), Jg[g].end());
+      double sum = 0.0;
+      for (int i = 0; i < num_trajectory; ++i) {
+        wg[g][i] = std::exp(-(Jg[g][i] - mn) / mppi_lambda_);
+        sum += wg[g][i];
+      }
+      if (sum > 0.0)
+        for (int i = 0; i < num_trajectory; ++i) wg[g][i] /= sum;
+    }
+  }
+
+  // 롤아웃 i, 채널 k 에 쓸 가중치.
+  auto wsel = [&](int i, int k) {
+    if (!wg.empty() && perarm_groups_ > 1 &&
+        k < static_cast<int>(perarm_ctrl_.size())) {
+      int g = perarm_ctrl_[k];
+      if (g >= 0 && g < static_cast<int>(wg.size())) return wg[g][i];
+    }
+    return weights[i];
+  };
+
+
   { // <-- 잠금 시작
     const std::unique_lock<std::shared_mutex> lock(mtx_);
 
@@ -267,7 +349,10 @@ int MPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
         for (int k = 0; k < model->nu; ++k) {
           double noise = cand_node->values()[k] - pol_node->values()[k];
           // u <- u + w_i * delta u
-          base_node->values()[k] += weights[i] * noise;
+          // base_node->values()[k] += weights[i] * noise;
+
+          base_node->values()[k] += wsel(i, k) * noise;
+
         }
       }
     }
@@ -518,6 +603,24 @@ void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
   const bool use_per_joint =
       static_cast<int>(noise_std_per_joint_.size()) == model->nu;
   double sigma[64];  // assume nu small (panda has 7)
+
+  // 노드값을 자를 범위. qacc_pd 가 켜져 있으면 노드값의 의미가 토크가 아니라
+  // 가속도이므로 ctrlrange(토크)로 자르면 단위가 안 맞는다. QaccToTorque 가
+  // 보간된 값을 ±qacc_pd_max 로 자르는 것과 같은 기준을 여기서도 쓴다.
+  // 기준이 다르면 노드가 유효 구간 밖으로 흘러가고, 그 구간의 샘플은 전부
+  // 같은 값으로 잘려 cost 가 평평해진다.
+  double node_range[128];
+  const double* clamp_range = model->actuator_ctrlrange;
+  if (QaccPdEnabled(model)) {
+    int id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd_max");
+    const double a = id >= 0 ? model->numeric_data[model->numeric_adr[id]] : 20.0;
+    for (int k = 0; k < model->nu && k < 64; k++) {
+      node_range[2 * k] = -a;
+      node_range[2 * k + 1] = a;
+    }
+    clamp_range = node_range;
+  }
+
   for (int k = 0; k < model->nu; k++) {
     if (use_per_joint) {
       sigma[k] = noise_std_per_joint_[k] * std;
@@ -538,7 +641,7 @@ void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
       for (int k = 0; k < model->nu; k++) {
         node.values()[k] += dc[k];
       }
-      Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+      Clamp(node.values().data(), clamp_range, model->nu);
     }
   } else {
     // Independent Gaussian per knot, with an optional linear noise ramp over
@@ -554,7 +657,7 @@ void MPPIPlanner::AddNoiseToPolicy(double start_time, int i) {
         double noise = absl::Gaussian<double>(gen_, 0.0, sigma[k] * ramp);
         node.values()[k] += noise;
       }
-      Clamp(node.values().data(), model->actuator_ctrlrange, model->nu);
+      Clamp(node.values().data(), clamp_range, model->nu);
       j++;
     }
   }
@@ -583,7 +686,11 @@ void MPPIPlanner::Rollouts(int num_trajectory, int horizon,
       }
 
       // sample noise policy
-      if (i != 0) s.AddNoiseToPolicy(time, i);
+      // original version;
+      // if (i != 0) s.AddNoiseToPolicy(time, i);
+
+      // standard MPPI version;
+      s.AddNoiseToPolicy(time, i);
 
       // ----- rollout sample policy ----- //
 

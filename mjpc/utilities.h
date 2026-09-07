@@ -425,6 +425,23 @@ void SetBlockInBand(double* band, const double* block, double scale, int ntotal,
                     int nband, int nblock, int shift, int row_skip = 0,
                     bool add = true);
 
+
+// Opt-in control reparameterisation: interpret the policy output as JOINT
+// ACCELERATION, integrate it one step against the live state to get (q_d, qvel_d),
+// and return the PD torque that tracks them. Enabled by the model numeric
+// "qacc_pd" (with per-actuator gains in "qacc_pd_kp" / "qacc_pd_kv"); absent, this
+// is a no-op, so tasks that do not opt in are untouched.
+//
+// Why not sample torque: with gravity compensation "hold still" is still an
+// unstable equilibrium for a torque-sampled arm -- measured on the 17-dof G1 upper
+// body, the hands drifted 40-75 mm in 1 s with the targets sitting on them.
+// Why not sample q_d: MuJoCo's position actuator damps ABSOLUTE velocity
+// (kp(q_d-q) - kv*qvel), so the damping term fights the very motion the position
+// term is asking for. Integrating qacc yields qvel_d as well, giving
+// kv(qvel_d - qvel), and the reference is C1 by construction.
+bool QaccPdEnabled(const mjModel* model);
+void QaccToTorque(const mjModel* model, const double* state, double* action);
+
 }  // namespace mjpc
 
 #endif  // MJPC_UTILITIES_H_

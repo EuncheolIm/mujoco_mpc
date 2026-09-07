@@ -27,11 +27,7 @@
 #include "mjpc/planners/sampling/planner.h"
 
 #include "mjpc/planners/MPPI/planner.h"
-#include "mjpc/planners/PriorMPPI/planner.h"
 #include "mjpc/planners/MPOPI/planner.h"
-#include "mjpc/planners/FlowMPPI/planner.h"
-#include "mjpc/planners/FlowMPPIRpy/planner.h"
-#include "mjpc/planners/FMOnly/planner.h"
 #include "mjpc/planners/RLMPPI/planner.h"
 #include "mjpc/planners/RLOnly/planner.h"
 
@@ -46,12 +42,8 @@ const char kPlannerNames[] =
     "Robust Sampling\n"
     "Cross Entropy\n"
     "Sample Gradient\n"
-    "FlowMPPI\n"
-    "FMOnly\n"
     "RLMPPI\n"
-    "RLOnly\n"
-    "PriorMPPI\n"
-    "FlowMPPIRpy";
+    "RLOnly";
 
 // load all available planners
 std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
@@ -68,12 +60,8 @@ std::vector<std::unique_ptr<mjpc::Planner>> LoadPlanners() {
       new RobustPlanner(std::make_unique<mjpc::SamplingPlanner>()));
   planners.emplace_back(new mjpc::CrossEntropyPlanner);
   planners.emplace_back(new mjpc::SampleGradientPlanner);
-  planners.emplace_back(new mjpc::FlowMPPIPlanner);
-  planners.emplace_back(new mjpc::FMOnlyPlanner);
   planners.emplace_back(new mjpc::RLMPPIPlanner);
   planners.emplace_back(new mjpc::RLOnlyPlanner);
-  planners.emplace_back(new mjpc::PriorMPPIPlanner);  // index 13
-  planners.emplace_back(new mjpc::FlowMPPIRpyPlanner);  // index 14 (FM goal=pos+rpy)
   return planners;
 }
 

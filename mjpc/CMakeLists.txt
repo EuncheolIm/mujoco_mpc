@@ -36,110 +36,21 @@ add_library(
   utilities.h
   tasks/tasks.cc
   tasks/tasks.h
-  tasks/acrobot/acrobot.cc
-  tasks/acrobot/acrobot.h
-  tasks/allegro/allegro.cc
-  tasks/allegro/allegro.h
-  tasks/bimanual/insert/insert.cc
-  tasks/bimanual/insert/insert.h
-  tasks/bimanual/handover/handover.cc
-  tasks/bimanual/handover/handover.h
-  tasks/bimanual/reorient/reorient.cc
-  tasks/bimanual/reorient/reorient.h
-  tasks/cartpole/cartpole.cc
-  tasks/cartpole/cartpole.h
-  tasks/fingers/fingers.cc
-  tasks/fingers/fingers.h
-  tasks/humanoid/interact/interact.cc
-  tasks/humanoid/interact/interact.h
-  tasks/humanoid/interact/contact_keyframe.cc
-  tasks/humanoid/interact/contact_keyframe.h
-  tasks/humanoid/interact/motion_strategy.cc
-  tasks/humanoid/interact/motion_strategy.h
-  tasks/humanoid/stand/stand.cc
-  tasks/humanoid/stand/stand.h
-  tasks/humanoid/tracking/tracking.cc
-  tasks/humanoid/tracking/tracking.h
-  tasks/humanoid/walk/walk.cc
-  tasks/humanoid/walk/walk.h
-  tasks/manipulation/common.cc
-  tasks/manipulation/common.h
-  tasks/manipulation/manipulation.cc
-  tasks/manipulation/manipulation.h
-  tasks/op3/stand.cc
-  tasks/op3/stand.h
   tasks/g1/stand.cc
   tasks/g1/stand.h
-  tasks/panda/panda.cc
-  tasks/panda/panda.h
-  tasks/particle/particle.cc
-  tasks/particle/particle.h
-  tasks/rubik/solve.cc
-  tasks/rubik/solve.h
-  tasks/shadow_reorient/hand.cc
-  tasks/shadow_reorient/hand.h
-  tasks/quadrotor/quadrotor.cc
-  tasks/quadrotor/quadrotor.h
-  tasks/quadruped/quadruped.cc
-  tasks/quadruped/quadruped.h
-  tasks/swimmer/swimmer.cc
-  tasks/swimmer/swimmer.h
-  tasks/walker/walker.cc
-  tasks/walker/walker.h
 
   # ===== EC ===== #
-  tasks/Fr3/fr3.cc
-  tasks/Fr3/fr3.h
-  tasks/Fr3/cost_fn.cc
-  tasks/Fr3/cost_fn.h
-  tasks/Fr3/dynamics.cc
-  tasks/Fr3/dynamics.h
-  tasks/Fr3Reach/fr3.cc
-  tasks/Fr3Reach/fr3.h
-  tasks/Fr3Reach/cost_fn.cc
-  tasks/Fr3Reach/cost_fn.h
-  tasks/Fr3Reach/dynamics.cc
-  tasks/Fr3Reach/dynamics.h
-  tasks/Fr3OodSim2Real/fr3.cc
-  tasks/Fr3OodSim2Real/fr3.h
-  tasks/Fr3OodSim2Real/cost_fn.cc
-  tasks/Fr3OodSim2Real/cost_fn.h
-  tasks/Fr3OodSim2Real/dynamics.cc
-  tasks/Fr3OodSim2Real/dynamics.h
-  tasks/Fr3HGripper/fr3.cc
-  tasks/Fr3HGripper/fr3.h
-  tasks/Fr3HGripper/cost_fn.cc
-  tasks/Fr3HGripper/cost_fn.h
-  tasks/Fr3HGripper/dynamics.cc
-  tasks/Fr3HGripper/dynamics.h
-  tasks/Fr3HGripperCarry/fr3.cc
-  tasks/Fr3HGripperCarry/fr3.h
-  tasks/Fr3HGripperDual/fr3.cc
-  tasks/Fr3HGripperDual/fr3.h
-  tasks/Fr3HGripperPot/fr3.cc
-  tasks/Fr3HGripperPot/fr3.h
-  tasks/Fr3HGripperPick/fr3.cc
-  tasks/Fr3HGripperPotDual/fr3.cc
-  tasks/Fr3HGripperPotDual/fr3.h
-  tasks/Fr3HGripperPick/fr3.h
-  tasks/Fr3HGripperReach/fr3.cc
-  tasks/Fr3HGripperReach/fr3.h
-  tasks/Fr3Grasp/fr3.cc
-  tasks/Fr3Grasp/fr3.h
-  tasks/Fr3Pick/fr3.cc
-  tasks/Fr3Pick/fr3.h
-  tasks/Fr3MazeForce/fr3_maze_force.cc
-  tasks/Fr3MazeForce/fr3_maze_force.h
-  tasks/Fr3MazeForce/cost_fn.cc
-  tasks/Fr3MazeForce/cost_fn.h
-  tasks/Fr3Obstacle/fr3_obstacle.cc
-  tasks/Fr3Obstacle/fr3_obstacle.h
-  tasks/Fr3Obstacle/cost_fn.cc
-  tasks/Fr3Obstacle/cost_fn.h
-  tasks/Fr3ObstacleQ/fr3_obstacle.cc
-  tasks/Fr3ObstacleQ/fr3_obstacle.h
-  tasks/Fr3ObstacleQ/cost_fn.cc
-  tasks/Fr3ObstacleQ/cost_fn.h
+
+  # // ===== g1 upperbody task! ====== //
+  tasks/G1Arm/g1_arm.cc
+  tasks/G1Arm/g1_arm.h
+  tasks/G1Arm/safety_filter.cc
+  tasks/G1Arm/safety_filter.h
+  tasks/G1Arm/cost_fn.cc
+  tasks/G1Arm/cost_fn.h
+  tasks/G1Arm/dynamics.cc
+  tasks/G1Arm/dynamics.h
+  # // ==================================
 
   # MPPI
   planners/MPPI/planner.cc
@@ -148,30 +59,12 @@ add_library(
   planners/MPPI/policy.cc
   planners/MPPI/policy.h
 
-  # PriorMPPI (MPPI subclass: ACT-prior warm-start / cost-residual injection)
-  planners/PriorMPPI/planner.cc
-  planners/PriorMPPI/planner.h
 
-  # FlowMPPI (MPPI with FM warm-start)
-  planners/FlowMPPI/planner.cc
-  planners/FlowMPPI/planner.h
 
-  planners/FlowMPPI/policy.cc
-  planners/FlowMPPI/policy.h
 
-  # FlowMPPIRpy (FlowMPPI clone with FM goal = pos+rpy, 6-D)
-  planners/FlowMPPIRpy/planner.cc
-  planners/FlowMPPIRpy/planner.h
 
-  planners/FlowMPPIRpy/policy.cc
-  planners/FlowMPPIRpy/policy.h
 
-  # FMOnly (pure FM PD, no MPPI sampling)
-  planners/FMOnly/planner.cc
-  planners/FMOnly/planner.h
 
-  planners/FMOnly/policy.cc
-  planners/FMOnly/policy.h
 
   # RLMPPI (MPPI sampling + RL policy cost bias, G1 29-DoF)
   planners/RLMPPI/planner.cc
@@ -391,27 +284,6 @@ target_link_libraries(
 target_include_directories(testspeed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Headless FR3 closed-loop evaluator (q-vs-torque / mode comparison logging).
-add_executable(fr3_eval fr3_eval.cc)
-target_link_libraries(
-  fr3_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(fr3_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-add_executable(fr3_reach_eval fr3_reach_eval.cc)
-target_link_libraries(
-  fr3_reach_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(fr3_reach_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Headless SETTLE evaluator (FR3_H_Gripper_Reach): per-target p2p/drift metrics.
 add_executable(pot_eval pot_eval.cc)
 target_link_libraries(
   pot_eval
@@ -445,47 +317,6 @@ target_include_directories(grasp_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Deterministic, deployment-consistent (decimated-planning async) FR3 reach sweep,
 # mirroring g1sweep/go2sweep. Standalone; does not modify shared FR3 sources.
-add_executable(fr3sweep fr3sweep.cc)
-target_link_libraries(
-  fr3sweep
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(fr3sweep PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# fr3record: fr3sweep + live offscreen video capture (adds glfw for the GL context).
-add_executable(fr3record fr3record.cc)
-target_link_libraries(
-  fr3record
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-  glfw
-)
-target_include_directories(fr3record PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# FM policy smoke + closed-loop tests (only when ONNX Runtime is available).
-if(MJPC_HAS_ONNXRUNTIME)
-  add_executable(fm_policy_test policies/fm_policy_test.cc)
-  target_link_libraries(fm_policy_test libmjpc Threads::Threads)
-  target_include_directories(fm_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-  add_executable(fm_x0_diversity_test policies/fm_x0_diversity_test.cc)
-  target_link_libraries(fm_x0_diversity_test libmjpc Threads::Threads)
-  target_include_directories(fm_x0_diversity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-  add_executable(fm_closed_loop_test policies/fm_closed_loop_test.cc)
-  target_link_libraries(fm_closed_loop_test libmjpc mujoco::mujoco glfw Threads::Threads)
-  target_include_directories(fm_closed_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-endif()
-
-# Hybrid Impedance wipe test — verifies whether mujoco contact model can
-# sustain table contact with a hand-tuned operational-space controller
-# (no MPC, no FM). Useful for separating "solref/solimp problem" from
-# "MPPI sampling problem" in the contact-sustain analysis.
 add_executable(impedance_wipe_test policies/impedance_wipe_test.cc)
 target_link_libraries(impedance_wipe_test libmjpc mujoco::mujoco glfw Threads::Threads)
 target_include_directories(impedance_wipe_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)

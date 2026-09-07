@@ -14,7 +14,6 @@
 
 #include "mjpc/utilities.h"
 
-#include "mjpc/policies/fm_config.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -524,11 +523,6 @@ static std::string GetTasksDir() {
   const char* tasks_dir = std::getenv("MJPC_TASKS_DIR");
   if (tasks_dir) {
     return tasks_dir;
-  }
-  // Fall back to fm_config.yaml's tasks_dir if specified.
-  const std::string& cfg_dir = mjpc::GetFMConfig().tasks_dir;
-  if (!cfg_dir.empty()) {
-    return cfg_dir;
   }
   return absl::StrCat(GetExecutableDir(), "/../mjpc/tasks");
 }
@@ -1588,6 +1582,86 @@ void SetBlockInBand(double* band, const double* block, double scale, int ntotal,
       mju_copy(band_row, block_row, width);
       mju_scl(band_row, band_row, scale, width);
     }
+  }
+}
+
+
+bool QaccPdEnabled(const mjModel* model) {
+  int id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd");
+  return id >= 0 && model->numeric_data[model->numeric_adr[id]] != 0.0;
+}
+
+void QaccToTorque(const mjModel* model, const double* state, double* action) {
+  const int nu = model->nu;
+  // NOT model->opt.timestep: mjpc sets the PLANNING model's timestep to
+  // agent_timestep (agent.cc:334) while the sim model keeps its own, so reading it
+  // here makes the rollout integrate the reference on a different clock than the
+  // executed control -- MPPI then optimises a plant it is not driving. Measured:
+  // 0.02 in rollout vs 0.002 in sim pinned the executed torque at a constant 3.3 Nm.
+  int dt_id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd_dt");
+  const double dt = dt_id >= 0 ? model->numeric_data[model->numeric_adr[dt_id]]
+                               : model->opt.timestep;
+  int kp_id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd_kp");
+  int kv_id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd_kv");
+  const double* kp = kp_id >= 0 ? model->numeric_data + model->numeric_adr[kp_id]
+                                : nullptr;
+  const double* kv = kv_id >= 0 ? model->numeric_data + model->numeric_adr[kv_id]
+                                : nullptr;
+  // ctrlrange has to stay the TORQUE range, because mjpc clamps the returned action
+  // against it after this call. The sampled acceleration therefore needs its own
+  // bound, or a knot near the torque limit would be read as a 200 rad/s^2 command.
+  // qacc = 0 must mean "slow down", not "keep coasting". Integrating straight from
+  // the live state gives the reference no position memory, so the arm drifts off a
+  // target that is sitting on it -- measured 73 mm in 2 s. Leaking the reference
+  // velocity fixes that structurally; with leak 0.6 the same test holds to 2 mm.
+  int leak_id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd_leak");
+  const double leak =
+      leak_id >= 0 ? model->numeric_data[model->numeric_adr[leak_id]] : 1.0;
+  int max_id = mj_name2id(model, mjOBJ_NUMERIC, "qacc_pd_max");
+  const double qacc_max =
+      max_id >= 0 ? model->numeric_data[model->numeric_adr[max_id]] : 20.0;
+  static bool logged = false;
+  if (!logged && std::getenv("MJPC_QACC_DBG")) {
+    logged = true;
+    std::fprintf(stderr, "[QaccPD] active: dt=%.4f leak=%.2f qacc_max=%.1f nu=%d\n",
+                 dt, leak, qacc_max, nu);
+    // alpha_max = tau_peak / I : 관절별로 실제로 낼 수 있는 가속도
+    for (int k = 0; k < nu; k++) {
+      int j = model->actuator_trnid[2 * k];
+      if (model->actuator_trntype[k] != mjTRN_JOINT || j < 0) continue;
+      int v = model->jnt_dofadr[j];
+      double tau = model->jnt_actfrclimited[j]
+                       ? model->jnt_actfrcrange[2 * j + 1]
+                       : 0.0;
+      const char* nm = mj_id2name(model, mjOBJ_JOINT, j);
+      std::fprintf(stderr, "  %-28s I=%8.5f  tau=%6.1f  alpha_max=%8.1f rad/s^2\n",
+                   nm ? nm : "?", model->dof_M0[v], tau,
+                   model->dof_M0[v] > 1e-9 ? tau / model->dof_M0[v] : 0.0);
+    }
+  }
+  const double* qpos = state;
+  const double* qvel = state + model->nq;
+
+  for (int k = 0; k < nu; k++) {
+    // this transform assumes one actuator per hinge joint, which is what the
+    // opt-in numeric is for; anything else is left alone
+    int jnt = model->actuator_trnid[2 * k];
+    if (model->actuator_trntype[k] != mjTRN_JOINT || jnt < 0) continue;
+    int qadr = model->jnt_qposadr[jnt];
+    int vadr = model->jnt_dofadr[jnt];
+
+    const double qacc = mju_clip(action[k], -qacc_max, qacc_max);
+    const double q = qpos[qadr], v = qvel[vadr];
+    // integrate one control step from the TRUE state, so the reference never
+    // accumulates drift the way a free-running integrator would
+    const double v_d = leak * v + qacc * dt;
+    const double q_d = q + 0.5 * (v + v_d) * dt;
+
+    const double g_p = kp ? kp[k] : 100.0;
+    const double g_v = kv ? kv[k] : 10.0;
+    // 실제 G1 하위 제어기와 같은 형태. (q_d, qdot_d, kp, kd) 만 보내면 되고
+    // 관성 피드포워드는 쓰지 않는다. gravcomp 가 g(q) 를 대신한다.
+    action[k] = g_p * (q_d - q) + g_v * (v_d - v);
   }
 }
 

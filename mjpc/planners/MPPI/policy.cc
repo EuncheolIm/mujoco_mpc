@@ -58,6 +58,14 @@ void MPPIPolicy::Action(double* action, const double* state,
   CHECK(action != nullptr);
   plan.Sample(time, absl::MakeSpan(action, model->nu));
 
+  // Opt-in: the plan holds joint accelerations, not controls. Converting here
+  // rather than in the planner means rollouts and the executed action go through
+  // exactly the same map.
+  // state == nullptr means the caller is re-sampling the plan into its own spline
+  // nodes, not asking for an executable control -- transforming there would store
+  // torque where the plan holds acceleration.
+  if (state != nullptr && QaccPdEnabled(model)) QaccToTorque(model, state, action);
+
   // Clamp controls
   Clamp(action, model->actuator_ctrlrange, model->nu);
 }
