@@ -1,4 +1,4 @@
-<mujoco model="Fr3Reach">
+<mujoco model="G1Arm">
   <include file="../common.xml"/>
 
   <!-- Pure-reach task: userdata is unused (no wipe/hybrid phases) but kept
@@ -61,11 +61,6 @@
     <geom solref=".001 1"/>
   </default>
 
-  <!-- <asset>
-    <material class="fr3" name="white_trans" rgba="1 1 1 0.3"/>
-    <material class="fr3" name="off_white_trans" rgba="0.901961 0.921569 0.929412 0.3"/>
-    <material class="fr3" name="black_trans" rgba="0.25 0.25 0.25 0.3"/>
-  </asset> -->
 
   <compiler texturedir="./textures"/>
 

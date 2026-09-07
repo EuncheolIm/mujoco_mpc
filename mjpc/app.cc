@@ -35,7 +35,6 @@
 #include "mjpc/array_safety.h"
 #include "mjpc/agent.h"
 #include "mjpc/tasks/G1Arm/safety_filter.h"
-#include "mjpc/tasks/Fr3ObstacleQ/fr3_experiment.h"
 #include "mjpc/estimators/estimator.h"
 #include "mjpc/simulate.h"  // mjpc fork
 #include "mjpc/task.h"
@@ -100,7 +99,7 @@ void controller(const mjModel* m, mjData* data) {
     // 무엇을 내든 여기서 접근 속도를 제한한다.
     mjpc::G1Safety::Filter(m, data, data->ctrl);
   }
-  // --- gripper auto on/off primitive (Fr3HGripper*): OFF by default so MPPI's sampled
+  // --- gripper auto on/off primitive: OFF by default so MPPI's sampled
   // gripper ctrl stands (MPPI chooses open/close). Set MJPC_GRIP_AUTO=1 to instead use the
   // deterministic proximity primitive: auto-CLOSE grab_motor when the grasp point
   // (gripper_site) nears the object, OPEN when far (hysteresis). Thresholds/close target
@@ -186,89 +185,6 @@ void controller(const mjModel* m, mjData* data) {
                    data->time, dist(sg, so), dist(so, st),
                    (jb >= 0) ? data->qpos[m->jnt_qposadr[jb]] : -1.0,
                    (ab >= 0) ? data->ctrl[ab] : -1.0, vobj, nco, align);
-    }
-  }
-
-  // Env-gated EE->target distance readout (MJPC_FR3_DIST_LOG) for FR3, so the GUI
-  // can be compared against the headless ep/eth metric. ~2 Hz to stderr.
-  static const bool fr3_dist = std::getenv("MJPC_FR3_DIST_LOG") != nullptr;
-  if (fr3_dist) {
-    static int fr3_obs_geom = mj_name2id(m, mjOBJ_GEOM, "obstacle");
-    static int fr3_ncon = 0;   // accumulated obstacle-contact steps (whole run)
-    // Env-gated qpos dump (MJPC_FR3_QPOS_OUT=<path>) at 50 Hz sim time so the
-    // EXECUTED run can be re-rendered offline (paper stills + videos share the
-    // exact same trajectory).
-    static FILE* fr3_qf = []() -> FILE* {
-      const char* p = std::getenv("MJPC_FR3_QPOS_OUT");
-      return (p && p[0]) ? std::fopen(p, "w") : nullptr;
-    }();
-    if (fr3_qf) {
-      static double fr3_qlast = -1e9;
-      if (data->time - fr3_qlast >= 0.02) {
-        fr3_qlast = data->time;
-        std::fprintf(fr3_qf, "%.4f", data->time);
-        for (int j = 0; j < m->nq; j++) std::fprintf(fr3_qf, " %.6f", data->qpos[j]);
-        std::fprintf(fr3_qf, "\n");
-        std::fflush(fr3_qf);
-      }
-    }
-    if (fr3_obs_geom >= 0)
-      for (int c = 0; c < data->ncon; c++)
-        if (data->contact[c].geom[0] == fr3_obs_geom ||
-            data->contact[c].geom[1] == fr3_obs_geom) { fr3_ncon++; break; }
-    static double fr3_last = -1e9;
-    if (data->time - fr3_last > 0.5) {
-      fr3_last = data->time;
-      double* h  = mjpc::SensorByName(m, data, "hand");
-      double* ht = mjpc::SensorByName(m, data, "hand_target");
-      double* hq = mjpc::SensorByName(m, data, "hand_orient");
-      double* tq = mjpc::SensorByName(m, data, "hand_target_orient");
-      if (h && ht && hq && tq) {
-        double ep = std::sqrt((h[0]-ht[0])*(h[0]-ht[0]) + (h[1]-ht[1])*(h[1]-ht[1]) +
-                              (h[2]-ht[2])*(h[2]-ht[2]));
-        double tc[4], eq[4], aa[3];
-        mju_negQuat(tc, tq); mju_mulQuat(eq, tc, hq); mju_quat2Vel(aa, eq, 1.0);
-        std::fprintf(stderr, "[FR3Dist] t=%.2f  ep=%.1f mm  eth=%.1f deg  ncon=%d\n",
-                     data->time, ep * 1000.0, mju_norm3(aa) * 57.2958, fr3_ncon);
-        // Convergence auto-exit (MJPC_FR3_CONV_EXIT="ep_mm eth_deg hold_s"):
-        // once ep/eth stay below the SUCCESS thresholds continuously for hold_s
-        // sim-seconds, request exit. Score-invariant early termination: the
-        // final held window is by construction below threshold, so prog/success
-        // read the same as a full-length run. Non-converging runs are cut by
-        // MJPC_AUTOEXIT instead.
-        static const auto conv_cfg = []() {
-          double v[3] = {-1, -1, -1};
-          if (const char* e = std::getenv("MJPC_FR3_CONV_EXIT"); e && e[0])
-            std::sscanf(e, "%lf %lf %lf", &v[0], &v[1], &v[2]);
-          return std::array<double, 3>{v[0], v[1], v[2]};
-        }();
-        if (conv_cfg[0] > 0) {
-          static double conv_since = -1.0;
-          bool ok = (ep * 1000.0 < conv_cfg[0]) &&
-                    (mju_norm3(aa) * 57.2958 < conv_cfg[1]);
-          if (!ok) conv_since = -1.0;
-          else if (conv_since < 0) conv_since = data->time;
-          else if (data->time - conv_since >= conv_cfg[2]) {
-            std::fprintf(stderr,
-                "[FR3Dist] converged (ep<%.0fmm eth<%.0fdeg held %.0fs) -> exit\n",
-                conv_cfg[0], conv_cfg[1], conv_cfg[2]);
-            sim->exitrequest.store(true);
-          }
-        }
-        // Collision auto-exit (MJPC_FR3_COLL_EXIT=<ncon>): a collided run is
-        // scored prog=0 no matter what follows, so exit the moment the
-        // collision condition (accumulated obstacle-contact steps > threshold)
-        // is met.
-        static const int coll_exit = []() {
-          const char* e = std::getenv("MJPC_FR3_COLL_EXIT");
-          return (e && e[0]) ? std::atoi(e) : -1;
-        }();
-        if (coll_exit >= 0 && fr3_ncon > coll_exit) {
-          std::fprintf(stderr, "[FR3Dist] collided (ncon=%d > %d) -> exit\n",
-                       fr3_ncon, coll_exit);
-          sim->exitrequest.store(true);
-        }
-      }
     }
   }
   // if noise
@@ -402,7 +318,6 @@ void PhysicsLoop(mj::Simulate& sim) {
       sim.filename = sim.agent->GetTaskXmlPath(sim.agent->gui_task_id);
 
       mjModel* mnew = LoadModel(sim.agent.get(), sim);
-      if (mnew) mjpc::LoadFR3Experiment(mnew);  // fr3_experiment.yaml (no-op if not FR3)
       mjData* dnew = nullptr;
       if (mnew) dnew = mj_makeData(mnew);
       if (dnew) {
@@ -665,7 +580,6 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
 
   sim->filename = sim->agent->GetTaskXmlPath(sim->agent->gui_task_id);
   m = LoadModel(sim->agent.get(), *sim);
-  if (m) mjpc::LoadFR3Experiment(m);  // fr3_experiment.yaml (no-op if not FR3)
   if (m) d = mj_makeData(m);
 
   // set home keyframe

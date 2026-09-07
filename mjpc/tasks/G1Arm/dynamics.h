@@ -42,6 +42,6 @@ void GetDynamicallyConsistentJacobianT_FromM(const mjModel* model,
 void GetNullSpaceProjector(const mjModel* model, const mjData* data,
                            double* N_out);
 
-}  // namespace mjpc::fr3reach
+}  // namespace mjpc::G1Dynamics
 
-#endif  // MJPC_MJPC_TASKS_FR3REACH_DYNAMICS_H_
+#endif  // MJPC_TASKS_G1ARM_DYNAMICS_H_

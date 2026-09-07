@@ -140,12 +140,6 @@ add_library(
   app.h
   norm.cc
   norm.h
-  policies/onnx_policy.cc
-  policies/onnx_policy.h
-  policies/mlp_policy.cc
-  policies/mlp_policy.h
-  policies/clik_policy.cc
-  policies/clik_policy.h
   policies/rl_policy.cc
   policies/rl_policy.h
   simulate.cc
@@ -284,43 +278,6 @@ target_link_libraries(
 target_include_directories(testspeed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Headless FR3 closed-loop evaluator (q-vs-torque / mode comparison logging).
-add_executable(pot_eval pot_eval.cc)
-target_link_libraries(
-  pot_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(pot_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-add_executable(hgripper_settle_eval hgripper_settle_eval.cc)
-target_link_libraries(
-  hgripper_settle_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(hgripper_settle_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Headless generic grasp evaluator (SUMO-style contact grasp: object pose + contact + gripper).
-add_executable(grasp_eval grasp_eval.cc)
-target_link_libraries(
-  grasp_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(grasp_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Deterministic, deployment-consistent (decimated-planning async) FR3 reach sweep,
-# mirroring g1sweep/go2sweep. Standalone; does not modify shared FR3 sources.
-add_executable(impedance_wipe_test policies/impedance_wipe_test.cc)
-target_link_libraries(impedance_wipe_test libmjpc mujoco::mujoco glfw Threads::Threads)
-target_include_directories(impedance_wipe_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-# Standalone TimeSpline copy semantics test (FlowMPPI leak diagnosis)
 add_executable(spline_copy_test spline/spline_copy_test.cc)
 target_link_libraries(spline_copy_test libmjpc)
 target_include_directories(spline_copy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
