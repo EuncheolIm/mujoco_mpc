@@ -121,6 +121,10 @@ add_library(
   tasks/Fr3HGripperPick/fr3.cc
   tasks/Fr3HGripperPotDual/fr3.cc
   tasks/Fr3HGripperPotDual/fr3.h
+  tasks/Fr3HGripperCoCarry/fr3.cc
+  tasks/Fr3HGripperCoCarry/fr3.h
+  tasks/Fr3HGripperHandover/handover.cc
+  tasks/Fr3HGripperHandover/handover.h
   tasks/Fr3HGripperPick/fr3.h
   tasks/Fr3HGripperReach/fr3.cc
   tasks/Fr3HGripperReach/fr3.h
@@ -421,6 +425,29 @@ target_link_libraries(
   Threads::Threads
 )
 target_include_directories(pot_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Headless evaluator for FR3_H_Gripper_CoCarry (dual-arm cooperative carry).
+# PotDual 계열에는 러너가 없었다 (pot_eval 은 FR3_H_Gripper_Pot 전용).
+add_executable(cocarry_eval cocarry_eval.cc)
+target_link_libraries(
+  cocarry_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(cocarry_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
+# Headless evaluator for FR3_H_Gripper_Handover (Gate 0 static-grasp test + plan run).
+add_executable(handover_eval handover_eval.cc)
+target_link_libraries(
+  handover_eval
+  libmjpc
+  mujoco::mujoco
+  threadpool
+  Threads::Threads
+)
+target_include_directories(handover_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 add_executable(hgripper_settle_eval hgripper_settle_eval.cc)
 target_link_libraries(

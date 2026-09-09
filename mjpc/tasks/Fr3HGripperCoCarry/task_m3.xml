@@ -1,4 +1,7 @@
-<mujoco model="Fr3HGripperPotDual">
+<mujoco model="Fr3HGripperCoCarry_m3">
+  <!-- 자동 생성 파일 -- 직접 고치지 말 것.
+       task.xml 에서 pot include 만 바꾼 것이다 (gen_mass_variants.py).
+       cost/FSM/keyframe 은 기준선과 동일해야 하므로 여기서 갈라지면 비교가 깨진다. -->
   <size memory="100M" nuserdata="5"/>
 
   <custom>
@@ -25,11 +28,17 @@
     <!-- where each arm's (pos3, ori3) block starts in the residual: L at 0, R at 41.
          Each arm's adaptive sigma is gated on its OWN error. -->
     <numeric name="perarm_res_off" size="2" data="0 41"/>
-    <numeric name="perarm_term" size="16" data="0 0 0 0 0 0 0  1 1 1 1 1 1 1  -1 -1"/>
+    <!-- **19 개여야 한다.** user 항이 19 개(L 7 + R 7 + collision + Internal + Impact +
+         Approach + Place)인데 이 배열이 16 이면 planner 는 `nterm = 배열 길이` 만큼만
+         순회하므로(`FlowMPPI/planner.cc:1010,1020`) 뒤 세 항이 **롤아웃 가중치 계산에서
+         통째로 빠진다**. 총비용에는 들어가지만 per-arm softmax 가 못 보므로 계획이
+         바뀌지 않는다. 실측: Place weight 를 0/1e5/1e6/1e7 로 바꿔도 결과가 소수점까지
+         동일했다(44.4 mm). Impact/Approach/Place 는 물체·환경 항이므로 -1(양팔 공유). -->
+    <numeric name="perarm_term" size="19" data="0 0 0 0 0 0 0  1 1 1 1 1 1 1  -1 -1 -1 -1 -1"/>
     <!-- Adaptive sampling sigma. res=[0,6) is L_pos/L_ori; the gate reads
          consecutive (pos3,ori3) pairs, and with the per-arm split the R block no
          longer follows L, so only the LEFT arm is covered here. -->
-    <numeric name="sampling_sigma_adapt" data="1"/>
+    <numeric name="sampling_sigma_adapt" data="0"/>
     <!-- floor 0.10, NOT the single-arm 0.05: this task's base std is half the
          single-arm one (1/0.5 vs 2/1), so 0.05 x base is too small to hold the
          pose - measured limit cycle (shrink to floor -> err 0.3->3.1 -> 20x jump
@@ -135,6 +144,15 @@
     </body>
 
     <!-- 냄비 목표 (mocap 2, 드래그 가능). 위치만 지령한다. -->
+    <!-- z = 0.12 여야 한다. 원본 PotDual 은 0.10 이었는데, 냄비 바닥이 바닥면에 닿는
+         높이가 **0.120** 이므로(`pot.xml` 머리주석: "the body must be spawned at
+         z = +0.120 for the base to touch the floor"; DBG 도 potz=0.120 을 찍는다)
+         0.10 은 목표를 바닥 아래 20 mm 에 두는 것이다. 결과: 도달할 수 없는 20 mm 가
+         그대로 남고(`pd_done_tol` 10 mm 이므로 성공 판정이 **원리적으로 불가능**),
+         trim 적분이 그 오차를 계속 적분해 팔이 냄비를 바닥으로 누른다.
+         실측(기준선 n=6): transport 에 도달한 네 시드의 최종 오차가 19.8 / 20.1 /
+         19.8 / 20.6 mm 로 동일했고 d_min 도 같은 값이었다 -- 한 번도 더 가까이 간 적이
+         없다. 제어 문제가 아니라 목표가 물리적으로 불가능했다. -->
     <body name="pot_goal" mocap="true" pos="0.60 0 0.42" quat="0.7071068 0 0 0.7071068">
       <geom name="pot_goal_ghost" type="mesh" mesh="pot_mesh" contype="0" conaffinity="0"
             group="2" rgba="0.3 0.9 0.5 0.25"/>
@@ -206,7 +224,20 @@
     <weld name="grasp_weld_r" body1="r_hand" body2="pot" active="false"
           solref="0.02 1" solimp="0.9 0.95 0.001"/>
   </equality>
+  <!-- **재현성: warmstart 를 끈다.** 롤아웃들이 mjData 를 재사용하는데, 어느 롤아웃이
+       어느 mjData 를 쓰는지가 스레드 배정에 따라 매번 달라져 이전 롤아웃의 솔버
+       warmstart(qacc_warmstart)가 섞인다. 그 미세한 차이가 증폭되어 같은 시드로도
+       실행이 갈렸다 -- 실측: 1 스레드는 12 s 까지 완전 동일, 8 스레드는 3 s 부터 갈림.
+       초기값을 항상 0 으로 두면 롤아웃 순서와 무관해진다. 솔버 반복이 조금 늘어나므로
+       plan_ms 를 확인할 것. (난수원은 별건이고 이미 고쳤다: FlowMPPI 의 absl::BitGen
+       -> std::mt19937_64. absl::BitGen 은 같은 seed_seq 로도 실행마다 다른 수열을 낸다.) -->
+  <option>
+    <flag warmstart="disable"/>
+  </option>
   <include file="fr3_H_gripper_dual.xml"/>
   <!-- pot AFTER the arms: its free joint is then the last 7 qpos entries. -->
-  <include file="pot.xml"/>
+  <include file="pot_m3.xml"/>
+  <!-- 장애물은 **맨 마지막**. mocap 3 이 되어 0~2(l_target/r_target/pot_goal)를 밀지
+       않는다. 자유관절이 없으므로 위 keyframe 의 qpos 레이아웃도 그대로다. -->
+  <include file="obstacle.xml"/>
 </mujoco>

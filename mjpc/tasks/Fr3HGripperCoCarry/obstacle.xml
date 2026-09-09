@@ -1,0 +1,25 @@
+<mujoco model="cocarry_obstacle">
+  <!-- 난이도 3축(보류): 운반 경로를 막는 기둥.
+
+       **mocap body 여야 한다.** `model->body_pos` 를 런타임에 고쳐도 플래너가 들고 있는
+       모델 사본에는 전파되지 않는다(에이전트가 `agent.cc:76` 에서 모델을 복사한다).
+       mocap 만 state 를 타고 `trajectory.cc:122-124` 를 거쳐 롤아웃까지 간다. 즉 mocap 이
+       아니면 MPPI 는 기둥이 없는 세상을 계획하고 실물만 부딪힌다. Handover 에서 확인된
+       사실이다.
+
+       **mocap 선언 순서가 계약이다.** 이 파일은 task.xml 의 마지막 include 여야 한다:
+       mocap 0 = l_target, 1 = r_target, 2 = pot_goal 은 그대로 두고 이 기둥이 3 이 된다.
+       FSM 과 러너가 `mocap_pos + 6` / `mocap_quat + 8` 로 냄비 목표를 집어 쓰므로
+       (`fr3.cc:655`), 앞쪽에 끼우면 전부 어긋난다.
+
+       기본은 멀리 주차해서 아무 영향이 없다. `MJPC_CC_OBS="x,y"` 로 불러들인다.
+       size/기본 위치는 Handover 의 기둥과 같게 뒀다 -- 그쪽 도달집합 측정을 재사용할 수
+       있게 하려는 것이다. -->
+  <worldbody>
+    <body name="obstacle" mocap="true" pos="3 0 0.30">
+      <geom name="obstacle_geom" type="box" size="0.04 0.04 0.30"
+            contype="1" conaffinity="1" condim="3" friction="1.0 0.02 0.01"
+            rgba="0.85 0.35 0.15 1" group="0"/>
+    </body>
+  </worldbody>
+</mujoco>
