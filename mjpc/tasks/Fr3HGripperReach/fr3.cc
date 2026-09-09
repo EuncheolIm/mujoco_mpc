@@ -22,6 +22,7 @@
 #include <mujoco/mujoco.h>
 #include "mjpc/task.h"
 #include "mjpc/utilities.h"
+#include "mjpc/tasks/Fr3Reach/cost_fn.h"
 
 namespace mjpc {
 namespace {
@@ -93,225 +94,24 @@ std::string FR3HGripperReach::XmlPath() const {
 std::string FR3HGripperReach::Name() const { return "FR3_H_Gripper_Reach"; }
 
 void FR3HGripperReach::ResidualFn::Residual(const mjModel* model,
-                                            const mjData* data,
-                                            double* residual) const {
-  int c = 0;
-  double* h  = SensorByName(model, data, "hand");
-  double* hq = SensorByName(model, data, "hand_quat");
-  double* t  = SensorByName(model, data, "target");
-  double* tq = SensorByName(model, data, "target_quat");
-
-  // Optional DEADBAND on the tracking terms (MJPC_HG_POS_DB [m],
-  // MJPC_HG_ORI_DB [rad]; 0 = off). Inside the band the residual is exactly
-  // zero, so the cost is flat and there is nothing to gain by twitching toward
-  // another millimetre — which at the shipped weights is what keeps the arm
-  // moving forever after it has arrived. Applied as a soft shrink
-  // (e * max(0, 1 - d/|e|)) so the residual stays continuous at |e| = d.
-  static const double pos_db = []() {
-    if (const char* e = std::getenv("MJPC_HG_POS_DB"); e && e[0])
-      return std::atof(e);
-    return 0.0;
-  }();
-  static const double ori_db = []() {
-    if (const char* e = std::getenv("MJPC_HG_ORI_DB"); e && e[0])
-      return std::atof(e);
-    return 0.0;
-  }();
-  auto shrink = [](double* v, int n, double band) {
-    if (band <= 0.0) return;
-    double norm = 0.0;
-    for (int i = 0; i < n; i++) norm += v[i] * v[i];
-    norm = std::sqrt(norm);
-    double s = (norm > 1e-12) ? mju_max(0.0, 1.0 - band / norm) : 0.0;
-    for (int i = 0; i < n; i++) v[i] *= s;
-  };
-
-  // 1. position (3): hand -> target
-  for (int i = 0; i < 3; i++) residual[c + i] = h[i] - t[i];
-  shrink(residual + c, 3, pos_db);
-  c += 3;
-  // 2. orientation (3)
-  double tconj[4]; mju_negQuat(tconj, tq);
-  double eq[4]; mju_mulQuat(eq, tconj, hq);
-  mju_quat2Vel(residual + c, eq, 1.0);
-  shrink(residual + c, 3, ori_db);
-  // MJPC_HG_ORI_SCALE raises the orientation priority. Needed because the
-  // adaptive-sigma gate gets stuck on targets where the pose converges to
-  // ~1.3 deg while its threshold is ~1.0 deg: the arm then never enters the
-  // settle regime even though the position is already sub-2 mm.
-  static const double ori_scale = []() {
-    if (const char* e = std::getenv("MJPC_HG_ORI_SCALE"); e && e[0])
-      return std::atof(e);
-    // MUST stay 1.0: the adaptive-sigma gate reads these residual entries as an
-    // absolute pose error, so scaling them here inflates the gate's view of the
-    // error and it never opens (measured: sigma stayed at 1.0 for a whole run).
-    // Orientation priority now lives in the Reach_ori WEIGHT instead, which is
-    // equivalent for the kL2 norm (cost = w * ||r||).
-    return 1.0;
-  }();
-  if (ori_scale != 1.0) {
-    for (int i = 0; i < 3; i++) residual[c + i] *= ori_scale;
-  }
-  c += 3;
-
-  // arm joint indices, resolved once (qpos / dof addresses reused below).
-  int jid[7], qadr[7], dadr[7];
-  for (int j = 1; j <= 7; j++) {
-    char nm[32]; std::snprintf(nm, sizeof(nm), "fr3_joint%d", j);
-    jid[j-1] = mj_name2id(model, mjOBJ_JOINT, nm);
-    qadr[j-1] = model->jnt_qposadr[jid[j-1]];
-    dadr[j-1] = model->jnt_dofadr[jid[j-1]];
-  }
-
-  // 3. joint centering (7): posture reg PROJECTED onto the null space of the EE
-  // Jacobian (matches Fr3Reach/cost_fn.cc CostJointCentralize), so centering
-  // only acts in directions that do not move the hand and cannot fight the
-  // reach term. Reference is the range midpoint by default, or the HOME
-  // keyframe when MJPC_CENT_HOME=1.
-  static const bool cent_home = []() {
-    const char* e = std::getenv("MJPC_CENT_HOME"); return e && e[0] == '1';
-  }();
-  static const int home_key = mj_name2id(model, mjOBJ_KEY, "home");
-  double dq[7];
-  for (int i = 0; i < 7; i++) {
-    double ref;
-    if (cent_home && home_key >= 0) {
-      ref = model->key_qpos[home_key * model->nq + qadr[i]];
-    } else {
-      ref = 0.5 * (model->jnt_range[jid[i] * 2] + model->jnt_range[jid[i] * 2 + 1]);
-    }
-    dq[i] = data->qpos[qadr[i]] - ref;
-  }
-  double N[7 * 7];
-  ArmNullSpaceProjector(model, data, dadr, N);
-  mju_mulMatVec(residual + c, N, dq, 7, 7);
-  // MJPC_HG_CENT_SCALE multiplies this residual. The drift that keeps the arm
-  // moving after it arrives is single-directional and lives in the EE Jacobian's
-  // null space (measured: drift == p2p, and always on the redundant j1/j3 pair).
-  // Nothing anchors that direction at the shipped settings: with weight 20 and
-  // p_smooth 1 the term sits in the norm's quadratic region and contributes
-  // ~0.9 against a reach cost of ~440. Scaling the residual pushes it into the
-  // linear region AND raises it to a level the softmax can actually see.
-  static const double cent_scale = []() {
-    if (const char* e = std::getenv("MJPC_HG_CENT_SCALE"); e && e[0])
-      return std::atof(e);
-    return 1000.0;  // settled value; see tasks/todo_hgripper_reach_settle.md
-  }();
-  if (cent_scale != 1.0) {
-    for (int i = 0; i < 7; i++) residual[c + i] *= cent_scale;
-  }
-  c += 7;
-
-  // 4. joint velocity (7): |qdot| + gain * max(|qdot| - limit, 0). The hinge
-  // (same constants as Fr3Reach CostJointVelocity) approximates a hard cap at
-  // qdot_limit; a plain qdot residual lets the redundant j1/j3 pair drift.
+                                           const mjData* data,
+                                           double* residual) const {
+  // MATCH-MPPI_Reach: byte-for-byte the same call sequence as
+  // Fr3Reach::ResidualFn::Residual. The previous 230-line inline body computed its
+  // own nullspace projector and added joint_limit + nullspace_vel, neither of which
+  // Fr3Reach has. Delegating instead of re-implementing is the only way to be sure
+  // the two tasks evaluate the SAME cost.
   //
-  // MJPC_HG_VEL_SCALE multiplies this residual (sweep knob; 1 = task.xml weight
-  // as-is). It exists because at the shipped weights the reach term dominates
-  // the velocity term by ~30x near convergence, so never stopping is optimal:
-  // shaving another millimetre off the position error is worth more than
-  // standing still. MJPC_HG_QDOT_LIMIT lowers the hinge knee for the same
-  // reason (1.0 rad/s never engages while settling).
-  static const double vel_scale = []() {
-    if (const char* e = std::getenv("MJPC_HG_VEL_SCALE"); e && e[0])
-      return std::atof(e);
-    return 1.0;
-  }();
-  static const double qdot_limit = []() {
-    if (const char* e = std::getenv("MJPC_HG_QDOT_LIMIT"); e && e[0])
-      return std::atof(e);
-    return 1.0;
-  }();
-  const double kOverflowGain = 140.0;
-  for (int i = 0; i < 7; i++) {
-    double abs_v = std::abs(data->qvel[dadr[i]]);
-    residual[c++] =
-        vel_scale * (abs_v + kOverflowGain * mju_max(abs_v - qdot_limit, 0.0));
-  }
-  // 5. joint-limit barrier (7): keep each arm joint MARGIN off its range limits.
-  static const double margin = []() {
-    if (const char* e = std::getenv("MJPC_JLIM_MARGIN"); e && e[0]) return std::atof(e);
-    return 0.25;
-  }();
-  for (int i = 0; i < 7; i++) {
-    double q = data->qpos[qadr[i]];
-    double lo = model->jnt_range[jid[i] * 2], hi = model->jnt_range[jid[i] * 2 + 1];
-    residual[c++] = mju_max(0.0, q - (hi - margin)) + mju_max(0.0, (lo + margin) - q);
-  }
-  // 5b. null-space VELOCITY (7): N(q) * qdot, i.e. only the joint motion that
-  // does NOT move the hand. The plain joint_vel term above cannot be raised far
-  // enough to stop the drift because it also penalises the motion needed to
-  // reach (measured: scaling it 1000x freezes the arm 200 mm short). Projecting
-  // first removes that conflict — this term is ~0 for any motion that actually
-  // serves the task, so it can be weighted hard. Weight comes from task.xml;
-  // MJPC_HG_NSVEL_SCALE is the sweep knob.
-  static const double nsvel_scale = []() {
-    if (const char* e = std::getenv("MJPC_HG_NSVEL_SCALE"); e && e[0])
-      return std::atof(e);
-    return 1.0;
-  }();
-  {
-    double dqd[7];
-    for (int i = 0; i < 7; i++) dqd[i] = data->qvel[dadr[i]];
-    mju_mulMatVec(residual + c, N, dqd, 7, 7);
-    if (nsvel_scale != 1.0) {
-      for (int i = 0; i < 7; i++) residual[c + i] *= nsvel_scale;
-    }
-    c += 7;
-  }
-
-  // 6. control regularization (7): arm torques (Fr3Reach u_reg). The gripper
-  // actuator (ctrl 7) is a position servo and is left out.
-  //
-  // MJPC_HG_UREG_SCALE multiplies this residual. Every link carries
-  // gravcomp="1", so zero torque IS the static equilibrium: driving the arm
-  // torque to zero is the physically correct way to make the arm stand still,
-  // unlike a velocity penalty (which also fights the approach) or shrinking the
-  // sampling sigma (which removes MPPI's only means of correcting the nominal,
-  // measured: the error grows again once sigma collapses). At the shipped weight
-  // 0.01 this term contributes ~0.05 against a reach cost of ~440 — inert.
-  static const double ureg_scale = []() {
-    if (const char* e = std::getenv("MJPC_HG_UREG_SCALE"); e && e[0])
-      return std::atof(e);
-    return 1.0;
-  }();
-  // GATED torque regularization: the scale jumps to MJPC_HG_UREG_HI once the
-  // pose is inside the converged band. Ungated u_reg fails because it fights the
-  // approach (swept 1e3..1e6: pos degraded to 25 mm). Gated, the two regimes are
-  // separated: outside the band the reach cost dominates and the arm moves; once
-  // inside, torque is driven toward zero, which with gravcomp="1" on every link
-  // IS the static equilibrium, so joint damping bleeds off the residual motion
-  // and the arm can actually hold still.
-  static const double ureg_hi = []() {
-    if (const char* e = std::getenv("MJPC_HG_UREG_HI"); e && e[0])
-      return std::atof(e);
-    return 10000.0;  // settled value; 0 disables the gating
-  }();
-  static const double gate_pos = []() {
-    if (const char* e = std::getenv("MJPC_HG_GATE_POS"); e && e[0])
-      return std::atof(e);
-    return 0.005;
-  }();
-  static const double gate_ori = []() {
-    if (const char* e = std::getenv("MJPC_HG_GATE_ORI"); e && e[0])
-      return std::atof(e);
-    return 0.020;
-  }();
-  double u_s = ureg_scale;
-  if (ureg_hi > 0.0) {
-    double pe = 0.0, oe = 0.0;
-    for (int i = 0; i < 3; i++) {
-      double d = h[i] - t[i];
-      pe += d * d;
-    }
-    double tc2[4], eq2[4], aa2[3];
-    mju_negQuat(tc2, tq);
-    mju_mulQuat(eq2, tc2, hq);
-    mju_quat2Vel(aa2, eq2, 1.0);
-    oe = mju_norm3(aa2);
-    if (std::sqrt(pe) < gate_pos && oe < gate_ori) u_s = ureg_hi;
-  }
-  for (int i = 0; i < 7; i++) residual[c++] = u_s * data->ctrl[i];
+  // fr3reach::CostJointCentralize -> GetNullSpaceProjector -> GetHandManipulatorJacobian,
+  // which returns without writing jacp/jacr unless model->nv == 7. That is why the
+  // gripper slide joints are welded in fr3_H_gripper_single.xml.
+  int counter = 0;
+  counter += fr3reach::CostPosition(model, data, residual + counter);
+  counter += fr3reach::CostOrientation(model, data, residual + counter);
+  counter += fr3reach::CostJointCentralize(model, data, residual + counter);
+  counter += fr3reach::CostJointVelocity(model, data, residual + counter);
+  counter += fr3reach::CostControl(model, data, residual + counter);
+  counter += fr3reach::CostFMTrack(model, data, residual + counter);
 
   int user_sensor_dim = 0;
   for (int i = 0; i < model->nsensor; i++) {
@@ -319,28 +119,197 @@ void FR3HGripperReach::ResidualFn::Residual(const mjModel* model,
       user_sensor_dim += model->sensor_dim[i];
     }
   }
-  if (user_sensor_dim != c) {
+  if (user_sensor_dim != counter) {
     mju_error_i(
         "mismatch between total user-sensor dimension "
         "and actual length of residual %d",
-        c);
+        counter);
   }
 }
 
 void FR3HGripperReach::TransitionLocked(mjModel* model, mjData* data) {
-  // Place the reach target once; after that it is user-draggable.
+  // ================= real robot bridge (/mjpc_bridge) =================
+  // Pairs with franka_ec's mppi_track_controller, which is the TORQUE-mode controller:
+  // it reads bridge_->action as Nm, low-pass filters it (alpha 0.2), rate-limits it to
+  // 1 Nm/tick, rejects anything over {87,87,87,87,12,12,12}, and falls back to gravity
+  // compensation if no fresh action arrives for 100 ms.
+  //
+  // NOT mppi_pos_controller: that one reads action as joint POSITION setpoints (rad) and
+  // applies tau = kp*(q_d - q) - kd*dq. This task's arm actuators are <motor> (torque),
+  // so ctrl is Nm and only the torque controller matches. Sending Nm to the position
+  // controller would be read as radians -- +-87 rad of commanded angle.
+  if (!bridge_ && !bridge_tried_) {
+    bridge_tried_ = true;
+    // MJPC_BRIDGE_DRYRUN=1 -> mirror state and COMPUTE torque, but never bump action_seq.
+    // The controller treats a stale action_seq as "no command" (100 ms limit) and holds
+    // gravity compensation, so the arm cannot move no matter what the planner decides.
+    // That makes it the safe first bring-up step AND the decisive test of the gravcomp
+    // branch below: at rest the printed |tau| must be near zero. If it comes out at tens
+    // of Nm on joints 2/4 then gravity is being subtracted twice and the arm would sag
+    // the moment dry-run is switched off.
+    if (const char* e = std::getenv("MJPC_BRIDGE_DRYRUN")) dry_run_ = (std::atoi(e) != 0);
+    bridge_ = mjpc_bridge_open(false);   // non-owner: the controller creates the region
+    if (bridge_) {
+      // Snapshot the sequence counters so leftovers from a previous session are not
+      // mistaken for fresh data.
+      last_state_seq_ = bridge_->state_seq;
+      last_target_seq_ = bridge_->target_seq;
+      fprintf(stderr,
+              "[FR3HGripperReach] /mjpc_bridge opened (torque mode). Arm state will be "
+              "mirrored from the robot and ctrl[0:7] sent as feedforward torque.\n");
+      if (dry_run_) {
+        fprintf(stderr,
+                "[FR3HGripperReach] DRY RUN (MJPC_BRIDGE_DRYRUN=1): action_seq is NOT "
+                "bumped, so the controller stays in gravity compensation and the arm will "
+                "NOT move. Torque is printed once a second for inspection.\n");
+      }
+    } else {
+      fprintf(stderr,
+              "[FR3HGripperReach] /mjpc_bridge not present -> SIM ONLY. Start the robot "
+              "first if you meant to drive hardware:\n"
+              "  ros2 launch franka_bringup mppi_track_controller.launch.py\n");
+    }
+  }
+  if (bridge_) {
+    const int32_t seq = bridge_->state_seq;
+    const bool state_fresh = (seq != last_state_seq_);
+    if (state_fresh) {
+      last_state_seq_ = seq;
+      // Mirror the measured arm state. Only the 7 arm joints: qpos[7..9] are the three
+      // finger slides, which the real H-gripper drives over EtherCAT and the bridge knows
+      // nothing about, so they are left to the sim.
+      state_seen_ = true;
+      for (int i = 0; i < 7; ++i) {
+        data->qpos[i] = static_cast<double>(bridge_->q[i]);
+        data->qvel[i] = static_cast<double>(bridge_->dq[i]);
+      }
+    }
+    // Publish only on fresh state, so a stalled controller stops getting new torque
+    // (its 100 ms timeout then drops to gravity comp) instead of being fed a plan
+    // computed from a frozen state.
+    if (state_fresh) {
+      const int nu = (model->nu < 7) ? model->nu : 7;
+      for (int i = 0; i < nu; ++i) {
+        // ctrl is the FULL joint torque this model needs. The robot adds its own g(q),
+        // so send feedforward only -- but what to subtract depends on gravcomp:
+        //
+        //   gravcomp OFF : ctrl includes the gravity hold  -> subtract qfrc_bias
+        //                  (= C(q,qd)qd + g(q)), as mppi_track does.
+        //   gravcomp ON  : MuJoCo already applies qfrc_gravcomp, so ctrl carries NO
+        //                  gravity term. Subtracting qfrc_bias would remove g(q) a
+        //                  second time and command -g(q) on top of the robot's own
+        //                  compensation -- the arm sags. Only Coriolis is ours to remove.
+        //
+        // This model ships gravcomp="1" on the arm, hence the branch. Checked per joint
+        // because body_gravcomp is per body, not global.
+        const int jbody = model->dof_bodyid[i];
+        const bool gc = model->body_gravcomp[jbody] > 0.0;
+        double tau_ff = data->ctrl[i];
+        if (!gc) tau_ff -= data->qfrc_bias[i];
+        tau_last_[i] = tau_ff;
+        if (!dry_run_) bridge_->action[i] = static_cast<float>(tau_ff);
+      }
+      if (!dry_run_) bridge_->action_seq++;
+
+      // Once-a-second torque report. |tau| at rest is the gravcomp sanity check; g(q) is
+      // printed beside it so a double-subtraction is obvious by inspection.
+      static double last_tau_print = -1e9;
+      if (data->time - last_tau_print >= 1.0) {
+        last_tau_print = data->time;
+        double tau_max = 0.0;
+        for (int i = 0; i < nu; ++i) {
+          const double a = std::fabs(tau_last_[i]);
+          if (a > tau_max) tau_max = a;
+        }
+        // EE vs target as well as torque. Without the position error there is no way to
+        // read a large |tau| correctly: a far target legitimately saturates the planner,
+        // and that looks identical to a misbehaving one when the arm is frozen in dry run
+        // and the error therefore never shrinks.
+        double pe = -1.0, oe = -1.0;
+        double ee[3] = {0, 0, 0};
+        const int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
+        if (sid >= 0 && model->nmocap >= 1) {
+          mju_copy3(ee, data->site_xpos + 3 * sid);
+          pe = mju_dist3(ee, data->mocap_pos);
+          double hq[4], tconj[4], eq[4], vel[3];
+          mju_mat2Quat(hq, data->site_xmat + 9 * sid);
+          mju_negQuat(tconj, data->mocap_quat);
+          mju_mulQuat(eq, tconj, hq);
+          mju_quat2Vel(vel, eq, 1.0);
+          oe = mju_norm3(vel) * 180.0 / mjPI;
+        }
+        fprintf(stderr,
+                "[FR3HGripperReach]%s |tau|max=%5.2f Nm  pos_err=%6.1f mm  ori_err=%5.1f deg"
+                "  ee=(%.3f %.3f %.3f) tgt=(%.3f %.3f %.3f)\n"
+                "    tau=(%.2f %.2f %.2f %.2f %.2f %.2f %.2f)"
+                "  g(q)=(%.1f %.1f %.1f %.1f %.1f %.1f %.1f)\n",
+                dry_run_ ? " [DRY]" : "", tau_max, pe * 1e3, oe,
+                ee[0], ee[1], ee[2],
+                data->mocap_pos[0], data->mocap_pos[1], data->mocap_pos[2],
+                tau_last_[0], tau_last_[1], tau_last_[2], tau_last_[3],
+                tau_last_[4], tau_last_[5], tau_last_[6],
+                data->qfrc_bias[0], data->qfrc_bias[1], data->qfrc_bias[2],
+                data->qfrc_bias[3], data->qfrc_bias[4], data->qfrc_bias[5],
+                data->qfrc_bias[6]);
+      }
+    }
+  }
+  // ===================================================================
+
+  // Runtime target override from set_target.py. mppi_track_controller never touches
+  // target_pos/target_seq (it only writes q/dq/state_seq and reads action), so those
+  // fields are ours to use even though the controller ignores them.
+  if (bridge_ && model->nmocap >= 1) {
+    const int32_t tseq = bridge_->target_seq;
+    if (tseq != last_target_seq_) {
+      last_target_seq_ = tseq;
+      data->mocap_pos[0] = static_cast<double>(bridge_->target_pos[0]);
+      data->mocap_pos[1] = static_cast<double>(bridge_->target_pos[1]);
+      data->mocap_pos[2] = static_cast<double>(bridge_->target_pos[2]);
+      fprintf(stderr, "[FR3HGripperReach] target -> (%.4f, %.4f, %.4f)\n",
+              bridge_->target_pos[0], bridge_->target_pos[1], bridge_->target_pos[2]);
+      goal_init_ = true;    // an explicit target wins over the startup default
+      return;
+    }
+  }
+
+  // ---- goal, placed once -------------------------------------------------
+  // Orientation goal = the CURRENT EE rotation, as Fr3Reach (MPPI_Reach) does. Holding a
+  // fixed absolute gripper-down quat fully constrains position(3)+orientation(3), which
+  // leaves a 7-DOF arm exactly one null-space direction -- the j1/j3 pair that was
+  // drifting at a fixed 1.08 ratio in every seed.
+  //
+  // ON HARDWARE the capture MUST wait for the first mirrored robot state. Without the
+  // wait it would latch the home keyframe's orientation and then ask the real arm, which
+  // starts wherever it happens to be, to rotate into it.
   if (goal_init_) return;
   if (model->nmocap < 1) { goal_init_ = true; return; }
+  if (bridge_ && !state_seen_) return;          // hardware: wait for real q
 
-  double g[3] = {0.5, 0.0, 0.5};
+  double g[3] = {0.4, 0.0, 0.3};
   if (const char* e = std::getenv("MJPC_TARGET_X")) g[0] = std::atof(e);
   if (const char* e = std::getenv("MJPC_TARGET_Y")) g[1] = std::atof(e);
   if (const char* e = std::getenv("MJPC_TARGET_Z")) g[2] = std::atof(e);
-  data->mocap_pos[0] = g[0]; data->mocap_pos[1] = g[1]; data->mocap_pos[2] = g[2];
-  // gripper-down (quat 0,1,0,0)
-  data->mocap_quat[0] = 0.0; data->mocap_quat[1] = 1.0;
-  data->mocap_quat[2] = 0.0; data->mocap_quat[3] = 0.0;
+  data->mocap_pos[0] = g[0];
+  data->mocap_pos[1] = g[1];
+  data->mocap_pos[2] = g[2];
 
+  {
+    const int sid = mj_name2id(model, mjOBJ_SITE, "hand_site");
+    if (sid < 0) { goal_init_ = true; return; }
+    mj_kinematics(model, data);
+    double ee_quat[4];
+    mju_mat2Quat(ee_quat, data->site_xmat + 9 * sid);
+    data->mocap_quat[0] = ee_quat[0];
+    data->mocap_quat[1] = ee_quat[1];
+    data->mocap_quat[2] = ee_quat[2];
+    data->mocap_quat[3] = ee_quat[3];
+    fprintf(stderr,
+            "[FR3HGripperReach] goal set: pos=(%.4f %.4f %.4f) ori=CAPTURED from the "
+            "%s EE quat (%.4f %.4f %.4f %.4f)\n",
+            g[0], g[1], g[2], bridge_ ? "ROBOT's" : "sim's",
+            ee_quat[0], ee_quat[1], ee_quat[2], ee_quat[3]);
+  }
   goal_init_ = true;
 }
 

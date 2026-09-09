@@ -313,16 +313,35 @@ void Trajectory::UpdateReturn(const Task* task) {
   // reset
   total_return = 0;
 
+  // Optional geometric discount over the horizon (MJPC_DISCOUNT, 1.0 = off).
+  //
+  // The stage costs are averaged with equal weight by default, so a 0.20 s horizon lets
+  // the prediction 200 ms out pull on a command that is replaced ~1 ms later. Weighting
+  // later stages down keeps the long-horizon information -- which is where the
+  // compliance comes from -- while making the near term decide the command that is
+  // actually executed. Weights are renormalised, so the return stays comparable in
+  // magnitude to the undiscounted one and lambda does not have to be retuned.
+  static const double gamma = []() {
+    if (const char* e = std::getenv("MJPC_DISCOUNT"); e && e[0]) {
+      double v = std::atof(e);
+      if (v > 0.0 && v <= 1.0) return v;
+    }
+    return 1.0;
+  }();
+
+  double wsum = 0.0, w = 1.0;
   for (int t = 0; t < horizon; t++) {
     // compute stage cost
     costs[t] = task->CostValue(DataAt(residual, t * task->num_residual));
 
     // update total return
-    total_return += costs[t];
+    total_return += w * costs[t];
+    wsum += w;
+    w *= gamma;
   }
 
-  // normalize return by trajectory horizon
-  total_return /= mju_max(horizon, 1);
+  // normalize by the accumulated weight (== horizon when gamma == 1)
+  total_return /= mju_max(wsum, 1.0e-12);
 }
 
 }  // namespace mjpc

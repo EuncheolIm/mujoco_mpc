@@ -48,6 +48,7 @@
 #include "mjpc/tasks/Fr3HGripper/fr3.h"
 #include "mjpc/tasks/Fr3HGripperReach/fr3.h"
 #include "mjpc/tasks/Fr3HGripperCarry/fr3.h"
+#include "mjpc/tasks/Fr3HGripperPick/fr3.h"
 #include "mjpc/tasks/Fr3HGripperDual/fr3.h"
 #include "mjpc/tasks/Fr3HGripperPot/fr3.h"
 #include "mjpc/tasks/Fr3Grasp/fr3.h"
@@ -66,6 +67,7 @@ std::vector<std::shared_ptr<Task>> GetTasks() {
       std::make_shared<FR3HGripper>(),
       std::make_shared<FR3HGripperReach>(),
       std::make_shared<FR3HGripperCarry>(),
+      std::make_shared<FR3HGripperPick>(),
       std::make_shared<FR3HGripperDual>(),
       std::make_shared<FR3HGripperPot>(),
       std::make_shared<FR3Grasp>(),

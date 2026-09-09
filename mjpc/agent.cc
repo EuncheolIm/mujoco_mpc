@@ -377,6 +377,38 @@ void Agent::PlanIteration(ThreadPool* pool) {
       g_plan_time_ms.store(agent_compute_time_ * 1e-3,
                            std::memory_order_relaxed);
 
+      // MJPC_PLAN_LOG=<seconds> prints the compute budget. RATIO IS THE NUMBER THAT
+      // MATTERS: replan time / control period. Above 1 the arm is executing a plan built
+      // from a state that has already moved on, which is what broke tracking on the Reach
+      // and Dual tasks in this repo (see Fr3HGripperCarry/NUC_CARRY_CONFIG.md section 2).
+      // fm is the prior's per-chunk inference cost; it runs on its own thread so it does
+      // NOT enter the replan time, but it competes for cores and makes the injected
+      // reference stale.
+      {
+        static const double log_period = []() {
+          if (const char* e = std::getenv("MJPC_PLAN_LOG"); e && e[0]) {
+            const double v = std::atof(e);
+            return v > 0.0 ? v : 0.0;
+          }
+          return 0.0;
+        }();
+        if (log_period > 0.0) {
+          static double last_log = -1e9;
+          const double now_s = state.time();
+          if (now_s - last_log >= log_period) {
+            last_log = now_s;
+            const double plan_ms = agent_compute_time_ * 1e-3;
+            const double dt_ms = timestep_ * 1e3;
+            const double fm_ms = g_fm_inference_ms.load(std::memory_order_relaxed);
+            std::printf("[COMPUTE t=%6.2f] plan %6.2f ms  (dt %.0f ms, ratio %.2f)"
+                        "   fm %6.2f ms%s\n",
+                        now_s, plan_ms, dt_ms, plan_ms / mju_max(dt_ms, 1e-9), fm_ms,
+                        plan_ms > dt_ms ? "   <-- STALE PLAN (ratio > 1)" : "");
+            std::fflush(stdout);
+          }
+        }
+      }
+
       // counter
       count_ += 1;
     } else {

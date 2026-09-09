@@ -139,6 +139,12 @@
     <!-- hand_force sensor now provided by fr3_yeshand.xml (renamed from
          ee_force). Removed inline declaration to avoid duplicate. -->
     <!-- <force name="hand_force" site="hand_site"/> -->
+  
+    <!-- MEASUREMENT ALIASES for hgripper_settle_eval, which resolves these exact
+         names. Not user sensors, so they do not enter the residual. -->
+    <framequat name="hand_quat"   objtype="site" objname="hand_site"/>
+    <framepos  name="target"      objtype="site" objname="hand_copy_site"/>
+    <framequat name="target_quat" objtype="site" objname="hand_copy_site"/>
   </sensor>
 
   <!-- modified from: https://github.com/google-deepmind/mujoco_menagerie/tree/main/franka_emika_panda -->

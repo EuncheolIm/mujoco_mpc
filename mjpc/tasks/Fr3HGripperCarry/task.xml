@@ -11,7 +11,7 @@
          MJPC_FM_CONFIG=.../Fr3HGripperCarry/fm_config.yaml (horizon 0.225 -> 2mm,
          stable at 100% realtime). Keep this in sync (0.225) for clarity only. -->
     <numeric name="agent_horizon" data="0.225"/>
-    <numeric name="agent_timestep" data="0.01"/>
+    <numeric name="agent_timestep" data="0.02"/>
     <numeric name="agent_policy_width" data="0.0035"/>
     <numeric name="sampling_trajectories" data="32"/>
     <numeric name="sampling_spline_points" data="30"/>
@@ -118,7 +118,7 @@
       <!-- A translucent GHOST OF THE OBJECT rather than a sphere: same box half-
            extents as sugar_box_geom (0.0225 0.045 0.0875), so where the box has to
            end up - position AND orientation - is directly readable. -->
-      <geom name="drag_geom" type="box" size="0.0225 0.045 0.0875"
+      <geom name="drag_geom" type="box" size="0.0200 0.0470 0.087"
             rgba="0.9 0.75 0.1 0.3" contype="0" conaffinity="0"/>
       <site name="target_site" pos="0 0 0" size="0.012" rgba="0 1 0 1" group="0"/>
       <!-- goal FRAME (x=red, y=green, z=blue). Object_ori drives the box toward
@@ -145,12 +145,25 @@
          gripper-down ori fails when the object has tipped into an awkward pose. -->
     <user name="Reach_ori"         dim="3" user="2 0       0 500000   0.01"/>
     <user name="joint_cent"        dim="7" user="2 20      0 5000     1"/>
-    <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>   <!-- NOT raised: 5000 blocks the approach too (grasp gap 17 -> 312mm). Slowing the transport needs a GATED term (active only once grasped), same pattern as the Reach task gated u_reg. -->
+    <user name="joint_vel_penalty" dim="7" user="2 3000    0 5000     0.01"/>   <!-- NOT raised: 5000 blocks the approach too (grasp gap 17 -> 312mm). Slowing the transport needs a GATED term (active only once grasped), same pattern as the Reach task gated u_reg. -->
     <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
     <user name="FM_track"          dim="7" user="2 10000   0 50000    0.01"/>
-    <user name="Hand_obj"          dim="3" user="2 500000  0 5000000  0.01"/>
-    <user name="Object_tgt"        dim="3" user="2 1000000 0 5000000  0.01"/>
-    <user name="Grip_ready"        dim="1" user="2 500000  0 5000000  0.01"/>
+    <user name="Hand_obj"          dim="3" user="2 380000  0 5000000  0.01"/>
+    <user name="Object_tgt"        dim="3" user="2 700000  0 5000000  0.01"/>
+    <user name="Grip_ready"        dim="1" user="2 2000000 0 5000000  0.01"/>
+    <!-- Grip_hold: DISABLED (weight 0). The idea was to stop MPPI releasing a held object
+         -- Grip_ready is one-sided, so opening after the grasp costs nothing and ctrl[7]
+         was observed flipping negative right after contact, throwing the box.
+         MEASURED AT WEIGHT 500000, 8 seeds: grasps went 8/8 -> 0/8. The term is
+         (1-grip)*held, so as soon as the pads touch it charges for not being FULLY closed,
+         and the fingers never close fully on a 45 mm box -- touching the object became a
+         permanent 200k penalty and the planner learned to avoid it entirely (ncon stuck at
+         4 = floor contact only, lift 0-12 mm).
+         Any retry needs the cost to be conditional on the object NOT being at its target,
+         or to compare against the grip the object's own width implies rather than 1.0.
+         cost_fn.cc's CostGripReady note warned that a symmetric open/close term failed
+         before; this is the second failure of that idea, by a different mechanism. -->
+    <user name="Grip_hold"         dim="1" user="2 4000    0 5000000  0.01"/>
     <!-- closing axis vs object short axis (1 - |dot|). Without it the pads meet
          the box's 90mm face and the close command jams (align was 0.21-0.37).
          Object-relative, so a tipped box is still handled. -->
@@ -176,7 +189,7 @@
     <!-- Velocity of the CARRIED OBJECT (3 linear + 3 angular*0.1), active only
          while the gripper is closed. Weight 0 = off; this is the knob for the
          object wobble that keeps the delivery dwell from completing. -->
-    <user name="Object_vel"        dim="6" user="2 50000   0 5000000  0.01"/>   <!-- inert until MJPC_CARRY_OBJVEL>0 -->
+    <user name="Object_vel"        dim="6" user="2 20000   0 5000000  0.01"/>   <!-- inert until MJPC_CARRY_OBJVEL>0 -->
 
     <framepos  name="hand"               objtype="site" objname="hand_site"/>
     <framequat name="hand_orient"        objtype="site" objname="hand_site"/>
@@ -190,10 +203,10 @@
     <framepos  name="trace0"             objtype="site" objname="hand_site"/>
   </sensor>
 
-  <include file="fr3_H_gripper.xml"/>
+  <include file="fr3_H_gripper_lite.xml"/>
 
   <keyframe>
     <!-- arm 7 + finger slides A/B/C 3 (open=0) + free box 7 (pos 0.5 0 0.088, quat 1 0 0 0). -->
-    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.5 0 0.088 1 0 0 0"/>
+    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.5 0 0.087 1 0 0 0"/>
   </keyframe>
 </mujoco>

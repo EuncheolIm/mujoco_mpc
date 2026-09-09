@@ -187,6 +187,32 @@ class FlowMPPIPlanner : public RankedPlanner {
   // If false, each knot gets an independent Gaussian sample (legacy behavior).
   bool noise_dc_per_rollout_ = false;
 
+  // ---- action trust region (MJPC_TRUST_BETA, 0 = off) ----
+  // With DC noise each rollout is one constant torque offset held over the whole
+  // horizon, but the executed command is replaced on the next replan (~1 ms), so the
+  // winning offset can jump freely every iteration. That jump IS the low-frequency
+  // wobble seen at long horizons. This penalises rollouts whose offset is far from
+  // the one applied last iteration, in the softmax exponent:
+  //   w_i = exp( -(J_i - J_min)/(den*lambda) - beta * ||dc_i - dc_prev||^2 )
+  // Acts purely in action space: no cost term, no model change, and it is
+  // independent of the horizon, so compliance from a long horizon is preserved.
+  double trust_beta_ = 0.0;             // 0 -> feature inert
+
+  // ---- executed-action hold (MJPC_ACTION_HOLD_MS, 0 = off) ----
+  // With DC noise a rollout means "hold this constant torque offset for the whole
+  // horizon", but ActionFromPolicy is queried every sim step, so the command is
+  // replaced ~1 ms later. At H=0.20 that is a 200:1 mismatch between what was
+  // evaluated and what is executed. Holding the returned action for N ms makes the
+  // execution period match the evaluation assumption. Unlike MJPC_PLAN_MODE=sync this
+  // does NOT throttle planning: the planner keeps refining the nominal at full rate,
+  // only the command handed to the sim/robot is held.
+  double action_hold_ms_ = 0.0;
+  std::vector<double> held_action_;
+  double held_action_time_ = -1.0e300;
+  std::vector<double> dc_draw_;         // num_trajectory * nu, this iteration's draws
+  std::vector<double> dc_prev_;         // nu, weighted mean applied last iteration
+  bool dc_prev_valid_ = false;
+
   // MPPI temperature: weight_i = exp(-(J_i - J_min) / mppi_lambda_).
   // Larger -> more uniform weights -> policy update is less driven by any
   // single lucky rollout -> less chatter, slower convergence.

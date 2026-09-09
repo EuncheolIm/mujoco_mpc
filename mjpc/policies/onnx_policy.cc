@@ -3,7 +3,13 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <cstdlib>
 #include <cnpy.h>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
+#endif
 #include "mjpc/timing_globals.h"
 
 ONNXPolicy::ONNXPolicy(const std::string& model_path, const std::string& stats_path)
@@ -23,7 +29,30 @@ ONNXPolicy::ONNXPolicy(const std::string& model_path, const std::string& stats_p
 
         env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "ONNXPolicy");
         session_options_ = std::make_unique<Ort::SessionOptions>();
-        session_options_->SetIntraOpNumThreads(1);
+        // Intra-op threads for one ODE step's matmuls. 1 was chosen when the planner
+        // owned every core: an ORT pool on top of 12 rollout threads oversubscribes and
+        // the FM thread loses more to contention than parallelism buys. That reasoning
+        // only holds while the cores are shared -- with cores reserved (MJPC_FM_CPUS +
+        // taskset for the planner) there is nothing to oversubscribe, so >1 becomes
+        // worth measuring. Default stays 1 so no existing launch changes behaviour.
+        int intra_op = 1;
+        if (const char* e = std::getenv("MJPC_FM_INTRAOP"); e && e[0]) {
+            const int v = std::atoi(e);
+            if (v > 0) intra_op = v;
+        }
+        session_options_->SetIntraOpNumThreads(intra_op);
+        // ORT builds its intra-op pool when the session is created -- on the MAIN thread,
+        // before startFMThread() pins the FM thread. The pool workers therefore inherit
+        // the main thread's mask, i.e. the planner's cores, not the reserved ones, which
+        // makes intra_op>1 fight the rollouts instead of helping. MJPC_FM_INTRAOP_AFFINITY
+        // is passed straight to ORT's own affinity option to place them explicitly:
+        // "<cpus>;<cpus>;..." with one entry per worker (intra_op-1; the calling thread is
+        // not counted), e.g. intra_op=4 -> "1;2;3".
+        if (const char* e = std::getenv("MJPC_FM_INTRAOP_AFFINITY"); e && e[0]) {
+            session_options_->AddConfigEntry("session.intra_op_thread_affinities", e);
+            std::cout << "[ONNXPolicy] intra-op affinities: " << e << std::endl;
+        }
+        std::cout << "[ONNXPolicy] intra-op threads: " << intra_op << std::endl;
         session_options_->SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
 
         // Optional CUDA execution provider (MJPC_FM_DEVICE=cuda).
@@ -143,6 +172,47 @@ void ONNXPolicy::startFMThread() {
     if (fm_running_.load()) return;
     fm_running_ = true;
     fm_thread_ = std::make_unique<std::thread>(&ONNXPolicy::fmThreadLoop, this);
+
+#ifdef __linux__
+    // PIN THE FM THREAD. Two measured effects stack on a hybrid CPU (i7-1360P: logical
+    // 0-7 are P-cores at 5.0 GHz, 8-15 are E-cores at 3.7 GHz):
+    //   * left to the scheduler the thread lands on an E-core -- 0.43 ms -> 1.0 ms per
+    //     forward, so 8.5 ms -> 20 ms for the 20-step ODE;
+    //   * the planner runs NumAvailableHardwareThreads()-4 = 12 rollout threads, which
+    //     then starve it further: measured 22 ms at 1 rollout, 29 ms at 4, 92 ms at 32.
+    // Together that turned an 8.5 ms integration into 92 ms, and a stale FM reference is
+    // exactly what CostFMTrack cannot tolerate.
+    //
+    // MJPC_FM_CPUS gives the CPU list ("0,1" by default, i.e. the first P-core pair).
+    // Set it empty to leave placement to the OS.
+    const char* cpus_env = std::getenv("MJPC_FM_CPUS");
+    std::string cpus = cpus_env ? std::string(cpus_env) : std::string("0,1");
+    if (!cpus.empty()) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        int n = 0;
+        const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+        size_t pos = 0;
+        while (pos < cpus.size()) {
+            size_t comma = cpus.find(',', pos);
+            const std::string tok = cpus.substr(pos, comma == std::string::npos
+                                                        ? std::string::npos : comma - pos);
+            if (!tok.empty()) {
+                const int c = std::atoi(tok.c_str());
+                if (c >= 0 && c < ncpu) { CPU_SET(c, &set); ++n; }
+            }
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+        if (n > 0) {
+            const int rc = pthread_setaffinity_np(fm_thread_->native_handle(),
+                                                  sizeof(set), &set);
+            std::cout << "[ONNXPolicy] FM thread pinned to CPU {" << cpus << "}"
+                      << (rc == 0 ? "" : " (FAILED, running unpinned)") << std::endl;
+        }
+    }
+#endif
+
     std::cout << "[ONNXPolicy] FM thread started (horizon=" << horizon_ << ")" << std::endl;
 }
 
@@ -545,6 +615,7 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
 
     bool has_prev_inputs = (input_names_.size() == 6);
 
+    double ode_run_ms = 0.0;   // summed session_->Run time, see below
     // Euler ODE: t=0 → t=1
     for (int k = 0; k < num_ode_steps_; k++) {
         t_buffer_[0] = static_cast<float>(k) * dt;
@@ -577,10 +648,16 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
                 memory_info_, t_buffer_.data(), 1, t_shape.data(), 2));
         }
 
+        // Split the ODE cost into "inside ORT" vs "everything else". The whole predict()
+        // measures 73 ms here while the same 20 forwards take 8.8 ms from python with the
+        // same library, so the gap has to be attributed before it can be fixed.
+        auto t_run0 = std::chrono::high_resolution_clock::now();
         auto outputs = session_->Run(
             Ort::RunOptions{nullptr},
             input_names_.data(), inputs.data(), input_names_.size(),
             output_names_.data(), output_names_.size());
+        ode_run_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t_run0).count();
 
         float* vel = outputs[0].GetTensorMutableData<float>();
 
@@ -663,6 +740,9 @@ void ONNXPolicy::predictFM(const std::vector<float>& state_norm,
     fm_total_ms += elapsed_ms;
     if (fm_call_count % 100 == 0) {
         double avg_ms = fm_total_ms / fm_call_count;
+        std::cerr << "[FM Split] total=" << elapsed_ms << "ms  ORT Run x"
+                  << num_ode_steps_ << "=" << ode_run_ms << "ms  other="
+                  << (elapsed_ms - ode_run_ms) << "ms" << std::endl;
         std::cout << "[FM Timing] H=" << horizon_ << " ODE=" << num_ode_steps_
                   << ": last=" << elapsed_ms << "ms, avg=" << avg_ms << "ms ("
                   << 1000.0/avg_ms << " Hz)" << std::endl;

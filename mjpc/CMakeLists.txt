@@ -114,6 +114,8 @@ add_library(
   tasks/Fr3HGripper/dynamics.h
   tasks/Fr3HGripperCarry/fr3.cc
   tasks/Fr3HGripperCarry/fr3.h
+  tasks/Fr3HGripperPick/fr3.cc
+  tasks/Fr3HGripperPick/fr3.h
   tasks/Fr3HGripperDual/fr3.cc
   tasks/Fr3HGripperDual/fr3.h
   tasks/Fr3HGripperPot/fr3.cc
@@ -299,6 +301,11 @@ target_link_libraries(
   Threads::Threads
   nlohmann_json::nlohmann_json
 )
+
+# POSIX shared memory for the real-robot state bridge (Fr3HGripperReach <-> franka_ec's
+# mppi_track_controller). shm_open lives in libc from glibc 2.34, but link rt explicitly
+# so the build does not depend on the host's glibc version.
+target_link_libraries(libmjpc rt)
 
 if(MJPC_HAS_ONNXRUNTIME)
   target_link_libraries(libmjpc ${ONNXRUNTIME_LIBRARY})

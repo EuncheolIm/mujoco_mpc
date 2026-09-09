@@ -96,6 +96,19 @@ void controller(const mjModel* m, mjData* data) {
         data->ctrl, &sim->agent->state.state()[0],
         sim->agent->state.time());
   }
+  // --- PHASE-DRIVEN gripper command (Fr3HGripperPick) ---
+  // That task removes the gripper from MPPI entirely (its sampling std is 0 and no cost
+  // term mentions it), so the planner never chooses an opening -- the task's phase
+  // machine does. This has to sit AFTER ActionFromPolicy, because that writes all nu
+  // channels and would overwrite anything Transition() had put in data->ctrl.
+  //
+  // The channel is carried in userdata rather than a new task API: userdata[0] != 0 is
+  // the opt-in and userdata[1] is the command. Every other task leaves userdata[0] at
+  // zero, so this block is inert for them.
+  if (m->nuserdata >= 2 && data->userdata[0] != 0.0) {
+    const int ga = mj_name2id(m, mjOBJ_ACTUATOR, "grab_motor");
+    if (ga >= 0 && ga < m->nu) data->ctrl[ga] = data->userdata[1];
+  }
   // --- gripper auto on/off primitive (Fr3HGripper*): OFF by default so MPPI's sampled
   // gripper ctrl stands (MPPI chooses open/close). Set MJPC_GRIP_AUTO=1 to instead use the
   // deterministic proximity primitive: auto-CLOSE grab_motor when the grasp point

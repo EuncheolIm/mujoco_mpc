@@ -64,6 +64,23 @@ int CostObjectToTarget(const mjModel* model, const mjData* data, double* residua
 // OPEN until it reaches the grasp pose, then closing is free.
 int CostGripReady(const mjModel* model, const mjData* data, double* residual);
 
+// Penalise OPENING while the pads are actually touching the object. dim 1.
+//
+// Why this exists: CostGripReady is deliberately one-sided -- residual = grip * dist, so
+// "open" costs nothing at any distance. That keeps the gripper from closing early, but it
+// also means that once the object IS held, releasing it is free. Measured consequence
+// (async, 8 seeds): ctrl[7] flips from +0.088 to -0.022 right after the grasp and stays
+// negative, the arm keeps lifting, and the object is thrown. Reducing the gripper's
+// exploration noise only lowers how often the search wanders into that free region; it
+// cannot fix a missing term.
+//
+// CONTACT-gated on purpose. cost_fn.cc's CostGripReady note records that a distance-based
+// symmetric term ("open while close = bad") made things worse and produced a new failure
+// where the gripper closes on nothing. Contact cannot do that: with nothing between the
+// pads there is no contact, so this term is exactly zero and the approach is unchanged.
+// Only tasks that declare a Grip_hold user sensor see it.
+int CostGripHold(const mjModel* model, const mjData* data, double* residual);
+
 // Object orientation vs the pose it is authored with (upright). CostObjectToTarget
 // is position-only, so without this a slip that first ROTATES the object in the
 // pads is invisible until it has already dropped. dim 3.

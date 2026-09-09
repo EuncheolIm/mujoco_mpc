@@ -96,6 +96,45 @@ int CostGripReady(const mjModel* model, const mjData* data, double* residual) {
 }
 
 
+int CostGripHold(const mjModel* model, const mjData* data, double* residual) {
+  // residual = (1 - grip) * held. Closed + holding -> ~0. Open + holding -> 1, i.e. the
+  // cost is letting go of something you are holding. Not holding -> 0, so this never
+  // pushes the gripper shut and the approach is untouched.
+  //
+  // `held` comes from FINGERTIP TOUCH SENSORS (pad1/2/3_touch), which is both more robust
+  // and closer to the hardware than counting contacts against a named object geom: the
+  // real gripper reports a binary CONTACT bit, and a thresholded touch force is the same
+  // signal. Tasks without those sensors get 0 and are unaffected.
+  //
+  // Judged on the TOTAL force across the three pads, not on a count of pads above a
+  // threshold. Measured while squeezing the box: pad 1 (finger A) always loads, but pads
+  // 2 and 3 (the coupled B/C finger) take turns -- at slide 0.030 only one of them was
+  // above 0.5 N, so a ">=2 pads" rule dropped held to 0 in the middle of a firm grasp, and
+  // every such gap makes releasing free again. The sum is monotone in how hard the pinch
+  // is (2.7 N at slide 0.030, 6 N at 0.040, 400+ N at 0.045) and does not flicker.
+  static int sid[3] = {-2, -2, -2};
+  if (sid[0] == -2) {
+    sid[0] = mj_name2id(model, mjOBJ_SENSOR, "pad1_touch");
+    sid[1] = mj_name2id(model, mjOBJ_SENSOR, "pad2_touch");
+    sid[2] = mj_name2id(model, mjOBJ_SENSOR, "pad3_touch");
+  }
+  // 1.5 N total: comfortably above the ~0 of an untouched pad and the sub-newton graze of
+  // a finger sweeping past, comfortably below the 2.7 N of the weakest real pinch measured.
+  constexpr double kHoldN = 1.5;
+  double f_tot = 0.0;
+  for (int k = 0; k < 3; k++) {
+    if (sid[k] >= 0) f_tot += data->sensordata[model->sensor_adr[sid[k]]];
+  }
+  const double held = (f_tot > kHoldN) ? 1.0 : 0.0;
+
+  const int jid = mj_name2id(model, mjOBJ_JOINT, "finger_A_slide_joint");
+  double grip = (jid >= 0) ? data->qpos[model->jnt_qposadr[jid]] / 0.05 : 0.0;
+  grip = mju_clip(grip, 0.0, 1.0);        // 0 = open, 1 = closed
+
+  residual[0] = (1.0 - grip) * held;
+  return 1;
+}
+
 // Null-space joint velocity for the arm's first 7 dofs: N(q) * qdot with
 // N = I - J^T (J J^T + lambda^2 I)^{-1} J at the grasp site. Ported from the
 // Reach/Pot tasks. Task-serving motion projects to ~0, so this can be weighted

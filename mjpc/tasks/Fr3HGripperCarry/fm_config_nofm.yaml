@@ -1,0 +1,28 @@
+# Carry WITHOUT the FM prior -- plain MPPI, more rollouts.
+#
+# Why: the prior only ever reached the plan through CostFMTrack, and on this machine the
+# FM thread runs the 20-step ODE at 12 Hz (measured 92 ms per chunk at 32 rollouts, 22 ms
+# with the planner idle -- it is starved by the 12 rollout threads and lands on an E-core).
+# A reference that stale is worse than none, and it costs a core that rollouts can use.
+# Fr3HGripperReach already runs this way (fm_track_scale 0, fm_frac 0) and converges.
+#
+# An EMPTY fm_checkpoint is what actually stops the model from loading -- MJPC_FM_CKPT
+# cannot be overridden to empty (the reader ignores empty env values), so it has to be
+# absent here.
+tasks_dir: mjpc/tasks
+autorun: true
+
+horizon: 0.225
+trajectories: 32         # NOT raised: NUC_CARRY_CONFIG.md measured K 32->64 doubling
+                         # the replan (6.0 -> 11.2 ms) and says explicitly not to raise
+                         # K on this machine. The compute win comes from agent_timestep
+                         # 0.01 -> 0.02 in task.xml instead (deliveries 3.75 -> 7.00).
+knots: 30
+lambda: 1000
+
+fm_mode: cost
+fm_track_scale: 0.0      # CostFMTrack residual -> 0, so task.xml's FM_track 10000 is inert
+fm_frac: 0.0
+guide_type: fm
+fm_checkpoint:           # empty = guide not loaded, no ODE thread
+fm_stats:

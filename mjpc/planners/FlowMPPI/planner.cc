@@ -273,6 +273,24 @@ void FlowMPPIPlanner::Initialize(mjModel* model, const Task& task) {
   if (const char* e = std::getenv("MJPC_FM_DC_NOISE"); e && e[0])
     noise_dc_per_rollout_ = std::atof(e) != 0.0;
 
+  // Action trust region. Only meaningful with DC noise, since it compares the
+  // per-rollout constant offsets.
+  if (const char* e = std::getenv("MJPC_TRUST_BETA"); e && e[0]) {
+    trust_beta_ = std::atof(e);
+    std::fprintf(stderr, "[FlowMPPI] action trust region: beta=%g%s\n", trust_beta_,
+                 noise_dc_per_rollout_ ? "" : "  (INERT: needs DC noise)");
+  }
+  if (const char* e = std::getenv("MJPC_ACTION_HOLD_MS"); e && e[0]) {
+    action_hold_ms_ = std::atof(e);
+    std::fprintf(stderr, "[FlowMPPI] executed-action hold: %g ms\n", action_hold_ms_);
+  }
+  held_action_.assign(model->nu, 0.0);
+  held_action_time_ = -1.0e300;
+
+  dc_draw_.assign(std::max(1, num_trajectory_) * model->nu, 0.0);
+  dc_prev_.assign(model->nu, 0.0);
+  dc_prev_valid_ = false;
+
   // Optional per-actuator std vector. Size must equal model->nu, else cleared
   // (falls back to legacy ctrlrange-scaled noise).
   noise_std_per_joint_.clear();
@@ -797,7 +815,16 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
     double den_all = span(min_all, max_all);
     double sum_all = 0.0;
     for (int i = 0; i < num_trajectory; ++i) {
-      weights[i] = std::exp(-(trajectory[i].total_return - min_all) / (den_all * mppi_lambda_));
+      double pen = 0.0;
+      if (trust_beta_ > 0.0 && dc_prev_valid_ && noise_dc_per_rollout_ &&
+          (i + 1) * model->nu <= static_cast<int>(dc_draw_.size())) {
+        for (int k = 0; k < model->nu; k++) {
+          const double d = dc_draw_[i * model->nu + k] - dc_prev_[k];
+          pen += d * d;
+        }
+        pen *= trust_beta_;
+      }
+      weights[i] = std::exp(-(trajectory[i].total_return - min_all) / (den_all * mppi_lambda_) - pen);
       sum_all += weights[i];
     }
     // Elite restriction (MJPC_FM_ELITE=k): keep only the k lowest-cost rollouts.
@@ -830,6 +857,18 @@ int FlowMPPIPlanner::OptimizePolicyCandidates(int ncandidates, int horizon,
     }
     if (sum_w_fm   > 0) for (int i = 0; i < N_fm; ++i)               weights[i] /= sum_w_fm;
     if (sum_w_mppi > 0) for (int i = N_fm; i < num_trajectory; ++i)  weights[i] /= sum_w_mppi;
+  }
+  // The offset actually applied this iteration becomes next iteration's centre.
+  if (trust_beta_ > 0.0 && noise_dc_per_rollout_) {
+    std::fill(dc_prev_.begin(), dc_prev_.end(), 0.0);
+    for (int i = 0; i < num_trajectory; ++i) {
+      if ((i + 1) * model->nu > static_cast<int>(dc_draw_.size())) break;
+      for (int k = 0; k < model->nu; k++)
+        dc_prev_[k] += weights[i] * dc_draw_[i * model->nu + k];
+    }
+    dc_prev_valid_ = true;
+  }
+  {
   }
 
   // ---------------------------------------------------------------------
@@ -1253,6 +1292,19 @@ void FlowMPPIPlanner::ActionFromPolicy(double* action, const double* state,
   // executed command: latch on the planner's own state
   QuantizeGripHyst(action, &grip_state_closed_);
 
+  // Hold the executed command for action_hold_ms_ of SIM time (see planner.h).
+  // use_previous queries are diagnostic/visualisation, so they bypass the hold.
+  if (action_hold_ms_ > 0.0 && !use_previous &&
+      static_cast<int>(held_action_.size()) == model->nu) {
+    const double hold_s = action_hold_ms_ * 1.0e-3;
+    if (time - held_action_time_ < hold_s && held_action_time_ > -1.0e299) {
+      mju_copy(action, held_action_.data(), model->nu);      // reuse
+    } else {
+      mju_copy(held_action_.data(), action, model->nu);      // refresh
+      held_action_time_ = time;
+    }
+  }
+
   // // =============== EC =============== //
   // if (this->model) {
   //   int num_id = mj_name2id(this->model, mjOBJ_NUMERIC, "F_des");
@@ -1466,6 +1518,11 @@ void FlowMPPIPlanner::AddNoiseToPolicy(double start_time, int i, double scale) {
     double grip_cmd = 0.0;
     if (grip_binary_) {
       grip_cmd = absl::Bernoulli(gen_, 0.5) ? grip_close_ : grip_open_;
+    }
+    // stash for the trust region (see planner.h)
+    if (trust_beta_ > 0.0 &&
+        (i + 1) * model->nu <= static_cast<int>(dc_draw_.size())) {
+      for (int k = 0; k < model->nu; k++) dc_draw_[i * model->nu + k] = dc[k];
     }
     for (const TimeSpline::Node& node : candidate_policy[i].plan) {
       for (int k = 0; k < model->nu; k++) {

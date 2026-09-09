@@ -84,7 +84,44 @@ int main(int argc, char** argv) {
   agent.state.Set(model, data);
   for (int w = 0; w < plan_warmup; w++) agent.PlanIteration(&pool);
 
-  std::printf("t,obj_x,obj_y,obj_z,obj_lift,obj_ncon,grip_ctrl,cost,hand_obj_dist,obj_tilt\n");
+  // ARM MOTION COLUMNS, added because "grasped and lifted" is NOT success on its own.
+  // The failure being chased is the arm windmilling -- joints sweeping huge arcs with no
+  // relation to the target -- and a run can do that while still ending up holding the box.
+  // On real hardware that motion is unacceptable regardless of the outcome, so it has to
+  // be measured, not eyeballed:
+  //   qv_max   [rad/s] largest |qvel| over the 7 arm joints at this instant
+  //   qv_rms   [rad/s] RMS over the 7, i.e. how much the WHOLE arm is moving
+  //   travel   [rad]   cumulative sum |dq| over all 7 joints since t=0. Windmilling shows
+  //                    up here even if the pose looks fine at the end: reaching and
+  //                    grasping costs a bounded amount of joint travel, thrashing does not
+  //   revs     [-]     direction reversals summed over the 7 joints (per-joint sign change
+  //                    of dq, ignoring numerical noise). Oscillation shows up here
+  int arm_dof[7] = {-1,-1,-1,-1,-1,-1,-1};
+  for (int j = 1; j <= 7; j++) {
+    char nm[32]; std::snprintf(nm, sizeof(nm), "fr3_joint%d", j);
+    int jid = mj_name2id(model, mjOBJ_JOINT, nm);
+    if (jid >= 0) arm_dof[j-1] = model->jnt_dofadr[jid];
+  }
+  double q_prev[7] = {0}, dq_prev[7] = {0}, travel = 0.0;
+  double per_travel[7] = {0}, q_lo[7], q_hi[7];
+  for (int k = 0; k < 7; k++) { q_lo[k] = 1e9; q_hi[k] = -1e9; }
+  long revs = 0;
+  bool first_meas = true;
+  // j1 and j3 get their own columns. They are the redundant pair for this task -- the
+  // null-space drift that keeps the arm moving after it arrives lives there (see the
+  // MJPC_HG_CENT_SCALE note in Fr3HGripperReach/fr3.cc), and the reach task measured
+  // 39 and 51 Nm on exactly those two while the rest sat near zero. If the arm is
+  // windmilling, it is almost certainly j1/j3 doing it.
+  int qadr[7];
+  for (int k = 0; k < 7; k++) {
+    char nm[32]; std::snprintf(nm, sizeof(nm), "fr3_joint%d", k + 1);
+    const int jid = mj_name2id(model, mjOBJ_JOINT, nm);
+    qadr[k] = (jid >= 0) ? model->jnt_qposadr[jid] : -1;
+  }
+
+  std::printf("t,obj_x,obj_y,obj_z,obj_lift,obj_ncon,grip_ctrl,cost,hand_obj_dist,obj_tilt,"
+              "qv_max,qv_rms,travel,revs,"
+              "j1_q,j1_trav,j1_span,j3_q,j3_trav,j3_span\n");
   int log_every = std::max(1, (int)std::round(0.05 / model->opt.timestep));
 
   auto measure = [&](int i) {
@@ -106,8 +143,39 @@ int main(int argc, char** argv) {
     }
     double zz = (obj_body >= 0) ? data->xmat[9*obj_body + 8] : 1.0;
     double tilt = std::acos(std::max(-1.0, std::min(1.0, zz))) * 180.0 / 3.14159265358979;
-    std::printf("%.3f,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.1f,%.4f,%.2f\n",
-                data->time, ox, oy, oz, oz - obj_z0, oncon, grip, cost, hd, tilt);
+    double qv_max = 0.0, qv_sq = 0.0;
+    for (int k = 0; k < 7; k++) {
+      if (arm_dof[k] < 0) continue;
+      const double v = data->qvel[arm_dof[k]];
+      const double a = std::fabs(v);
+      if (a > qv_max) qv_max = a;
+      qv_sq += v * v;
+      if (qadr[k] < 0) continue;
+      const double q = data->qpos[qadr[k]];
+      if (q < q_lo[k]) q_lo[k] = q;
+      if (q > q_hi[k]) q_hi[k] = q;
+      if (!first_meas) {
+        const double dq = q - q_prev[k];
+        travel += std::fabs(dq);
+        per_travel[k] += std::fabs(dq);
+        // ignore sub-0.1 mrad wobble so numerical noise is not counted as a reversal
+        if (std::fabs(dq) > 1e-4 && std::fabs(dq_prev[k]) > 1e-4 && dq * dq_prev[k] < 0.0)
+          revs++;
+        if (std::fabs(dq) > 1e-4) dq_prev[k] = dq;
+      }
+      q_prev[k] = q;
+    }
+    first_meas = false;
+    std::printf("%.3f,%.4f,%.4f,%.4f,%.4f,%d,%.4f,%.1f,%.4f,%.2f,%.3f,%.3f,%.2f,%ld",
+                data->time, ox, oy, oz, oz - obj_z0, oncon, grip, cost, hd, tilt,
+                qv_max, std::sqrt(qv_sq / 7.0), travel, revs);
+    // j1 / j3 detail: current angle, cumulative travel, and span (max-min so far).
+    // span separates "swept one big arc" from "oscillated in place"; travel catches both.
+    std::printf(",%.4f,%.2f,%.4f,%.4f,%.2f,%.4f\n",
+                qadr[0] >= 0 ? data->qpos[qadr[0]] : 0.0, per_travel[0],
+                (q_hi[0] > q_lo[0]) ? q_hi[0] - q_lo[0] : 0.0,
+                qadr[2] >= 0 ? data->qpos[qadr[2]] : 0.0, per_travel[2],
+                (q_hi[2] > q_lo[2]) ? q_hi[2] - q_lo[2] : 0.0);
   };
 
   double slowdown = std::getenv("MJPC_SLOWDOWN") ? std::atof(std::getenv("MJPC_SLOWDOWN")) : 1.0;

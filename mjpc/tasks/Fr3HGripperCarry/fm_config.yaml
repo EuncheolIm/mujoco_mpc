@@ -24,8 +24,8 @@ fm_frac: 0.5
 
 # ---- guide: flow-matching adaLN (goal=pos+rpy 6-D, ODE) ----
 guide_type: fm
-fm_checkpoint: /home/kkomji/Euncheol/mujoco_mpc/mjpc/tasks/Fr3HGripper/checkpoints/flow_h_grip/flow_h_grip.onnx
-fm_stats:      /home/kkomji/Euncheol/mujoco_mpc/mjpc/tasks/Fr3HGripper/checkpoints/flow_h_grip/normalization_stats.npz
+fm_checkpoint: mjpc/tasks/Fr3HGripper/checkpoints/flow_h_grip/flow_h_grip.onnx
+fm_stats:      mjpc/tasks/Fr3HGripper/checkpoints/flow_h_grip/normalization_stats.npz
 fm_ode_steps: 20          # matches training sample() num_steps
 fm_chunk_dt: 0.02         # subsample 20 x sim dt 0.001
 fm_te_decay: 0.01

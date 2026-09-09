@@ -15,6 +15,17 @@
 # Copy the model files to the binary directory to make them available to the
 # built binary.
 
+# Where the FR3-specific mesh assets live (see note at the copy_directory below).
+# Default: the flow-matching-robot-control checkout sitting next to this repo.
+get_filename_component(_MJPC_TMP_DIR "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+set(FR3_ASSETS_DIR "${_MJPC_TMP_DIR}/flow-matching-robot-control/model/assets"
+    CACHE PATH "Directory holding the FR3 mesh assets for fr3_yeshand.xml")
+if(NOT EXISTS "${FR3_ASSETS_DIR}")
+  message(WARNING "FR3_ASSETS_DIR does not exist: ${FR3_ASSETS_DIR}\n"
+                  "  Fr3/fr3_yeshand.xml will be missing meshes. Pass "
+                  "-DFR3_ASSETS_DIR=/path/to/assets to fix.")
+endif()
+
 add_custom_target(
   copy_model_resources ALL
   ## dm_control models
@@ -45,8 +56,14 @@ add_custom_target(
 
   # 4b. fr3 assets (different mesh decomposition from panda; needed by
   # fr3_yeshand.xml). Copy on top of panda assets so both mesh sets coexist.
+  #
+  # Path was hardcoded to /home/kkomji/tmp/... -- the machine this branch was authored
+  # on -- so the build failed here on any other checkout. Derived from the repo location
+  # instead: this tree lives at <...>/franka_ec/tmp/mujoco_mpc-*/, and
+  # flow-matching-robot-control is its sibling under the same tmp/. Override with
+  # -DFR3_ASSETS_DIR=... if the layout differs.
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-  /home/kkomji/tmp/flow-matching-robot-control/model/assets
+  ${FR3_ASSETS_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}/Fr3/assets
 
   # G1 stand: model + assets are vendored under mjpc/tasks/g1/ (source tree),

@@ -1,0 +1,287 @@
+<mujoco model="fr3_H_gripper">
+  <compiler angle="radian" meshdir="assets" />
+  <option integrator="implicitfast" timestep="0.001" solver="Newton" iterations="100" jacobian="auto" tolerance="1e-8" cone="pyramidal" impratio="1" gravity="0 0 -9.81" />
+  <option>
+    <flag gravity="enable" override="enable" multiccd="enable" />
+  </option>
+  <default>
+    <default class="fr3">
+      <joint damping="0.21" armature="0.195" />
+      <default class="visual_fr3">
+        <geom type="mesh" group="2" contype="0" conaffinity="0" />
+      </default>
+      <default class="collision">
+        <geom type="mesh" group="3" mass="0" density="0" />
+      </default>
+      <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4" />
+    </default>
+    <default class="H_gripper">
+      <joint armature="0.1" damping="1.0" />
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="1" />
+      </default>
+      <default class="fingertip_pad_collision_1">
+        <geom type="box" group="2" size="0.004 0.007 0.0135" contype="1" conaffinity="1" mass="0.01" pos="0.012 0.0 0.018" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="fingertip_pad_collision_2">
+        <geom type="box" group="2" size="0.004 0.007 0.0135" contype="1" conaffinity="1" mass="0.01" pos="-0.012 0.0 0.018" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="rotate_A_link_collision">
+        <geom type="box" group="2" size="0.025 0.015 0.025" contype="1" conaffinity="1" mass="0.01" pos="0.085 0 -0.003" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="rotate_B_link_collision">
+        <geom type="box" group="2" size="0.025 0.012 0.01" contype="1" conaffinity="1" mass="0.01" pos="-0.085 0.032 0.01" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+      <default class="rotate_C_link_collision">
+        <geom type="box" group="2" size="0.025 0.012 0.01" contype="1" conaffinity="1" mass="0.01" pos="-0.085 -0.032 0.01" solref="0.02 1" solimp="0.95 0.99 0.001" friction="1.0 0.02 0.01" priority="3" rgba="1 0 0 0.5" />
+      </default>
+    </default>
+  </default>
+  <!-- RIGID GRIPPER: the 60 gripper meshes are deleted, not just unused.
+       MEASURED, controlled (same ngeom=56, no geom referencing them either way):
+         28 meshes / 232k faces -> mj_collision 12.21us, mj_step 18.43us
+         88 meshes / 698k faces -> mj_collision 35.89us, mj_step 47.89us
+       So merely DECLARING meshes nothing refers to costs 2.6x per step. It is not
+       about visual vs collision meshes: none of the 60 was reachable from any geom,
+       and this model has zero collidable mesh geoms at all (spheres + one cylinder).
+       mj_kinematics is unchanged (1.22 vs 1.16us), so the algorithmic work cannot
+       have changed -- most likely cache pressure from the ~3x larger contiguous
+       mjModel, but that mechanism is NOT verified. What is verified is the rule:
+       do not declare meshes the model does not use. -->
+  <asset>
+    <material name="black" rgba=".2 .2 .2 1" />
+    <material name="white" rgba="1 1 1 1" />
+    <material name="red" rgba="1 0.072272 0.039546 1" />
+    <material name="gray" rgba="0.863156 0.863156 0.863157 1" />
+    <material name="button_green" rgba="0.102241 0.571125 0.102242 1" />
+    <material name="button_red" rgba="0.520996 0.008023 0.013702 1" />
+    <material name="button_blue" rgba="0.024157 0.445201 0.737911 1" />
+    <material name="off_white" rgba="0.901961 0.921569 0.929412 1" />
+    <mesh file="link0_0.obj" />
+    <mesh file="link0_1.obj" />
+    <mesh file="link0_2.obj" />
+    <mesh file="link0_3.obj" />
+    <mesh file="link0_4.obj" />
+    <mesh file="link0_5.obj" />
+    <mesh file="link0_6.obj" />
+    <mesh file="link1.obj" />
+    <mesh file="link2.obj" />
+    <mesh file="link3_0.obj" />
+    <mesh file="link3_1.obj" />
+    <mesh file="link4_0.obj" />
+    <mesh file="link4_1.obj" />
+    <mesh file="link5_0.obj" />
+    <mesh file="link5_1.obj" />
+    <mesh file="link5_2.obj" />
+    <mesh file="link6_0.obj" />
+    <mesh file="link6_1.obj" />
+    <mesh file="link6_2.obj" />
+    <mesh file="link6_3.obj" />
+    <mesh file="link6_4.obj" />
+    <mesh file="link6_5.obj" />
+    <mesh file="link6_6.obj" />
+    <mesh file="link6_7.obj" />
+    <mesh file="link7_0.obj" />
+    <mesh file="link7_1.obj" />
+    <mesh file="link7_2.obj" />
+    <mesh file="link7_3.obj" />
+  </asset>
+  <worldbody>
+    <geom mesh="link0_0" material="black" class="visual_fr3" />
+    <geom mesh="link0_1" material="white" class="visual_fr3" />
+    <geom mesh="link0_2" material="white" class="visual_fr3" />
+    <geom mesh="link0_3" material="white" class="visual_fr3" />
+    <geom mesh="link0_4" material="white" class="visual_fr3" />
+    <geom mesh="link0_5" material="red" class="visual_fr3" />
+    <geom mesh="link0_6" material="black" class="visual_fr3" />
+    <geom name="link0_R_col" type="cylinder" size="0.07 0.04" pos="-0.02 0 0.04" class="collision" />
+    <!-- link0 (= world) frame markers: x=red, y=green, z=blue, 0.15 m each -->
+    <site name="link0_origin" type="sphere" pos="0 0 0" size="0.015" rgba="1 1 0 0.9" group="1" />
+    <site name="link0_frame_x" type="cylinder" pos="0.15 0 0" euler="0 1.5708 0" size="0.006 0.15" rgba="1 0 0 0.9" group="1" />
+    <site name="link0_frame_y" type="cylinder" pos="0 0.15 0" euler="-1.5708 0 0" size="0.006 0.15" rgba="0 1 0 0.9" group="1" />
+    <site name="link0_frame_z" type="cylinder" pos="0 0 0.115" euler="0 0 0" size="0.006 0.115" rgba="0 0 1 0.9" group="1" />
+    <body name="fr3_link1" pos="0 0 0.333" childclass="fr3" gravcomp="1">
+      <geom name="col_link1_0" type="sphere" size="0.055" pos="0.000 -0.080 0.000" contype="0" conaffinity="0" class="collision" />
+      <geom name="col_link1_1" type="sphere" size="0.060" pos="0.000 0.000 -0.120" contype="0" conaffinity="0" class="collision" />
+      <geom name="col_link1_2" type="sphere" size="0.060" pos="0.000 0.000 -0.170" contype="0" conaffinity="0" class="collision" />
+      <inertial pos="4.128e-07 -0.0181251 -0.0386036" quat="0.998098 -0.0605364 0.00380499 0.0110109" mass="2.92747" diaginertia="0.0239286 0.0227246 0.00610634" />
+      <joint name="fr3_joint1" axis="0 0 1" range="-2.7437 2.7437" actuatorfrcrange="-87 87" />
+      <geom material="white" mesh="link1" class="visual_fr3" />
+      <body name="fr3_link2" quat="1 -1 0 0" gravcomp="1">
+        <geom name="col_link2_0" type="sphere" size="0.055" pos="0.000 0.000 0.080" class="collision" />
+        <geom name="col_link2_1" type="sphere" size="0.055" pos="0.000 -0.120 0.000" class="collision" />
+        <geom name="col_link2_2" type="sphere" size="0.055" pos="0.000 -0.170 0.000" class="collision" />
+        <inertial pos="0.00318289 -0.0743222 0.00881461" quat="0.502599 0.584437 -0.465998 0.434366" mass="2.93554" diaginertia="0.0629567 0.0411924 0.0246371" />
+        <joint name="fr3_joint2" axis="0 0 1" range="-1.7837 1.7837" actuatorfrcrange="-87 87" />
+        <geom material="white" mesh="link2" class="visual_fr3" />
+        <body name="fr3_link3" pos="0 -0.316 0" quat="1 1 0 0" gravcomp="1">
+          <geom name="col_link3_0" type="sphere" size="0.050" pos="0.000 0.000 -0.060" class="collision" />
+          <geom name="col_link3_1" type="sphere" size="0.060" pos="0.000 0.000 -0.100" class="collision" />
+          <geom name="col_link3_2" type="sphere" size="0.052" pos="0.080 0.060 0.000" class="collision" />
+          <inertial pos="0.0407016 -0.00482006 -0.0289731" quat="0.921025 -0.244161 0.155272 0.260745" mass="2.2449" diaginertia="0.0267409 0.0189869 0.0171587" />
+          <joint name="fr3_joint3" axis="0 0 1" range="-2.9007 2.9007" actuatorfrcrange="-87 87" />
+          <geom mesh="link3_0" material="white" class="visual_fr3" />
+          <geom mesh="link3_1" material="black" class="visual_fr3" />
+          <body name="fr3_link4" pos="0.0825 0 0" quat="1 1 0 0" gravcomp="1">
+            <geom name="col_link4_0" type="sphere" size="0.052" pos="0.000 0.000 0.060" class="collision" />
+            <geom name="col_link4_1" type="sphere" size="0.052" pos="-0.080 0.060 0.000" class="collision" />
+            <inertial pos="-0.0459101 0.0630493 -0.00851879" quat="0.438018 0.803311 0.00937812 0.403414" mass="2.6156" diaginertia="0.05139 0.0372717 0.0160047" />
+            <joint name="fr3_joint4" axis="0 0 1" range="-3.0421 -0.1518" actuatorfrcrange="-87 87" />
+            <geom mesh="link4_0" material="white" class="visual_fr3" />
+            <geom mesh="link4_1" material="black" class="visual_fr3" />
+            <body name="fr3_link5" pos="-0.0825 0.384 0" quat="1 -1 0 0" gravcomp="1">
+              <geom name="col_link5_0" type="sphere" size="0.050" pos="0.000 0.082 0.000" class="collision" />
+              <geom name="col_link5_1" type="sphere" size="0.050" pos="0.000 0.000 -0.220" class="collision" />
+              <geom name="col_link5_2" type="sphere" size="0.050" pos="0.000 -0.009 0.000" class="collision" />
+              <geom name="col_link5_3" type="sphere" size="0.040" pos="0.000 0.052 -0.180" class="collision" />
+              <geom name="col_link5_4" type="sphere" size="0.022" pos="0.010 0.090 -0.080" class="collision" />
+              <inertial pos="-0.00160396 0.0292536 -0.0972966" quat="0.919031 0.125604 0.0751531 -0.366003" mass="2.32712" diaginertia="0.0579335 0.0449144 0.0130634" />
+              <joint name="fr3_joint5" axis="0 0 1" range="-2.8065 2.8065" actuatorfrcrange="-12 12" armature="0.074" frictionloss="0.763" />
+              <geom mesh="link5_0" material="white" class="visual_fr3" />
+              <geom mesh="link5_1" material="white" class="visual_fr3" />
+              <geom mesh="link5_2" material="black" class="visual_fr3" />
+              <body name="fr3_link6" quat="1 1 0 0" gravcomp="1">
+                <geom name="col_link6_0" type="sphere" size="0.045" pos="0.085 0.035 0.000" class="collision" />
+                <geom name="col_link6_1" type="sphere" size="0.045" pos="0.085 -0.015 0.000" class="collision" />
+                <inertial pos="0.0597131 -0.0410295 -0.0101693" quat="0.621301 0.552665 0.510011 0.220081" mass="1.81704" diaginertia="0.0175039 0.0161123 0.00193529" />
+                <joint name="fr3_joint6" axis="0 0 1" range="0.5445 4.5169" actuatorfrcrange="-12 12" armature="0.074" frictionloss="0.44" />
+                <geom mesh="link6_0" material="button_green" class="visual_fr3" />
+                <geom mesh="link6_1" material="white" class="visual_fr3" />
+                <geom mesh="link6_2" material="white" class="visual_fr3" />
+                <geom mesh="link6_3" material="gray" class="visual_fr3" />
+                <geom mesh="link6_4" material="button_red" class="visual_fr3" />
+                <geom mesh="link6_5" material="white" class="visual_fr3" />
+                <geom mesh="link6_6" material="black" class="visual_fr3" />
+                <geom mesh="link6_7" material="button_blue" class="visual_fr3" />
+                <body name="fr3_link7" pos="0.088 0 0" quat="1 1 0 0" gravcomp="1">
+                  <geom name="col_link7_0" type="sphere" size="0.045" pos="0.000 0.000 0.070" class="collision" />
+                  <geom name="col_link7_1" type="sphere" size="0.024" pos="0.020 0.040 0.080" class="collision" />
+                  <geom name="col_link7_2" type="sphere" size="0.024" pos="0.040 0.020 0.080" class="collision" />
+                  <geom name="col_link7_3" type="sphere" size="0.020" pos="0.040 0.060 0.085" class="collision" />
+                  <inertial pos="0.00452258 0.00862619 -0.0161633" quat="0.727579 0.0978688 -0.24906 0.63168" mass="0.627143" diaginertia="0.000223836 0.000223642 5.64132e-07" />
+                  <joint name="fr3_joint7" axis="0 0 1" range="-3.0159 3.0159" actuatorfrcrange="-12 12" armature="0.074" frictionloss="0.248" />
+                  <geom mesh="link7_0" material="black" class="visual_fr3" />
+                  <geom mesh="link7_1" material="white" class="visual_fr3" />
+                  <geom mesh="link7_2" material="white" class="visual_fr3" />
+                  <geom mesh="link7_3" material="black" class="visual_fr3" />
+                  <!-- 0.310, not 0.365: the REAL controller reports its EE at fr3_link7 + 0.310 m
+                       (measured on hardware; matching it took the model-vs-hardware FK gap
+                       from 57.0 mm to 2.0 mm). Both the reach cost and the hand sensors read
+                       this site, so 0.365 would offset every commanded target by 55 mm. -->
+                  <site name="hand_site" pos="0 0 0.310" group="0" />
+                  <site name="frame_x" type="cylinder" pos="0.04 0 0.34" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
+                  <site name="frame_y" type="cylinder" pos="0 0.04 0.34" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
+                  <site name="frame_z" type="cylinder" pos="0 0 0.38" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
+                  <!-- RIGID GRIPPER (generated). The 60-body H-gripper subtree collapsed into one
+                       body. Mass properties are EXACT: computed by /tmp/carry_eval/composite.py from
+                       MuJoCo's own compiled body_mass / body_inertia / xipos over the subtree at the
+                       home keyframe, then parallel-axis summed about the composite COM and rotated
+                       into this body's frame. Reach only needs hand_site (a child of fr3_link7), so
+                       nothing here is referenced by the cost. Geometry is a visual placeholder.
+                       DO NOT use for Carry: the fingers neither move nor collide. -->
+                  <body name="hand" pos="0 0 0.220" gravcomp="1">
+                    <inertial pos="-0.009863237 -0.000073661 0.000882385" mass="1.467288630"
+                              quat="0.703430392 -0.694244096 0.099431435 0.115430534"
+                              diaginertia="3.022759965e-03 5.677399593e-03 7.220569646e-03"/>
+                    <site name="gripper_site" type="sphere" pos="0 0 0.145" size="0.005" rgba="1 0 0 1" group="0"/>
+                    <!-- Real fingertip pads, not a placeholder box. Position / size / orientation were
+                         read out of the 60-body model with mj_forward and expressed in this body frame
+                         (all three come out axis-aligned, quat = identity). Sizes are the ORIGINAL
+                         gripper_pad_1..3 half-extents. Home = fully OPEN, so this is the open stance;
+                         the pads cannot move here because the gripper is welded.
+                         contype/conaffinity 0: visual only. Mass comes from <inertial> above, so these
+                         contribute nothing to the mass properties (verified: body_mass unchanged).
+                         Primitives, so they add no mesh faces -- which is what made the original
+                         collision cost 3x (see the asset note). -->
+                    <geom name="gripper_pad_1" type="box" size="0.0040 0.0070 0.0135"
+                          pos="0.05407 0.00004 0.14301" contype="0" conaffinity="0" group="1"
+                          rgba="0.85 0.55 0.15 0.9"/>
+                    <geom name="gripper_pad_2" type="box" size="0.0040 0.0070 0.0135"
+                          pos="-0.05411 0.03210 0.14301" contype="0" conaffinity="0" group="1"
+                          rgba="0.85 0.55 0.15 0.9"/>
+                    <geom name="gripper_pad_3" type="box" size="0.0040 0.0070 0.0135"
+                          pos="-0.05412 -0.03209 0.14301" contype="0" conaffinity="0" group="1"
+                          rgba="0.85 0.55 0.15 0.9"/>
+                    <site name="finger1_site" pos="0.05407 0.00004 0.14501" size="0.003" rgba="1 0.6 0 1" group="0"/>
+                    <site name="finger2_site" pos="-0.05411 0.03210 0.14501" size="0.003" rgba="1 0.6 0 1" group="0"/>
+                    <site name="finger3_site" pos="-0.05412 -0.03209 0.14501" size="0.003" rgba="1 0.6 0 1" group="0"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <!-- RIGID GRIPPER: every exclude below pairs finger_* bodies that the
+       collapse removed, so the block cannot compile. -->
+  <!--
+  <contact>
+    <exclude name="finger_1" body1="hand" body2="base_finger_A_link" />
+    <exclude name="finger_2" body1="hand" body2="finger_B_link" />
+    <exclude name="finger_3" body1="hand" body2="finger_B_rot_link" />
+    <exclude name="finger_4" body1="hand" body2="finger_C_link" />
+    <exclude name="finger_5" body1="hand" body2="finger_C_rot_link" />
+    <exclude name="finger_6" body1="base_finger_A_link" body2="finger_B_link" />
+    <exclude name="finger_7" body1="base_finger_A_link" body2="finger_B_rot_link" />
+    <exclude name="finger_8" body1="base_finger_A_link" body2="finger_C_link" />
+    <exclude name="finger_9" body1="base_finger_A_link" body2="finger_C_rot_link" />
+    <exclude name="finger_10" body1="finger_B_link" body2="finger_B_rot_link" />
+    <exclude name="finger_11" body1="finger_B_link" body2="finger_C_link" />
+    <exclude name="finger_12" body1="finger_B_link" body2="finger_C_rot_link" />
+    <exclude name="finger_13" body1="finger_C_link" body2="finger_B_rot_link" />
+    <exclude name="finger_14" body1="finger_C_link" body2="finger_C_rot_link" />
+    <exclude name="finger_15" body1="finger_B_rot_link" body2="finger_C_rot_link" />
+    <exclude name="finger_A_1" body1="finger_A_sub_link_1" body2="finger_A_sub_link_4" />
+    <exclude name="finger_A_2" body1="finger_A_sub_link_1" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_3" body1="finger_A_sub_link_4" body2="finger_A_sub_link_6" />
+    <exclude name="finger_A_4" body1="finger_A_sub_link_4" body2="finger_A_sub_link_7" />
+    <exclude name="finger_A_5" body1="finger_A_sub_link_4" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_6" body1="finger_A_sub_link_4" body2="finger_A_sub_link_12" />
+    <exclude name="finger_A_7" body1="finger_A_sub_link_6" body2="finger_A_sub_link_7" />
+    <exclude name="finger_A_8" body1="finger_A_sub_link_6" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_9" body1="finger_A_sub_link_6" body2="finger_A_sub_link_12" />
+    <exclude name="finger_A_10" body1="finger_A_sub_link_7" body2="finger_A_sub_link_8" />
+    <exclude name="finger_A_11" body1="finger_A_sub_link_7" body2="finger_A_sub_link_12" />
+    <exclude name="finger_B_1" body1="finger_B_sub_link_1" body2="finger_B_sub_link_4" />
+    <exclude name="finger_B_2" body1="finger_B_sub_link_1" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_3" body1="finger_B_sub_link_4" body2="finger_B_sub_link_6" />
+    <exclude name="finger_B_4" body1="finger_B_sub_link_4" body2="finger_B_sub_link_7" />
+    <exclude name="finger_B_5" body1="finger_B_sub_link_4" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_6" body1="finger_B_sub_link_4" body2="finger_B_sub_link_12" />
+    <exclude name="finger_B_7" body1="finger_B_sub_link_6" body2="finger_B_sub_link_7" />
+    <exclude name="finger_B_8" body1="finger_B_sub_link_6" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_9" body1="finger_B_sub_link_6" body2="finger_B_sub_link_12" />
+    <exclude name="finger_B_10" body1="finger_B_sub_link_7" body2="finger_B_sub_link_8" />
+    <exclude name="finger_B_11" body1="finger_B_sub_link_7" body2="finger_B_sub_link_12" />
+    <exclude name="finger_C_1" body1="finger_C_sub_link_1" body2="finger_C_sub_link_4" />
+    <exclude name="finger_C_2" body1="finger_C_sub_link_1" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_3" body1="finger_C_sub_link_4" body2="finger_C_sub_link_6" />
+    <exclude name="finger_C_4" body1="finger_C_sub_link_4" body2="finger_C_sub_link_7" />
+    <exclude name="finger_C_5" body1="finger_C_sub_link_4" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_6" body1="finger_C_sub_link_4" body2="finger_C_sub_link_12" />
+    <exclude name="finger_C_7" body1="finger_C_sub_link_6" body2="finger_C_sub_link_7" />
+    <exclude name="finger_C_8" body1="finger_C_sub_link_6" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_9" body1="finger_C_sub_link_6" body2="finger_C_sub_link_12" />
+    <exclude name="finger_C_10" body1="finger_C_sub_link_7" body2="finger_C_sub_link_8" />
+    <exclude name="finger_C_11" body1="finger_C_sub_link_7" body2="finger_C_sub_link_12" />
+  </contact>
+  -->
+  <!-- MATCH-MPPI_Reach: both constraints couple the now-welded slide joints. -->
+  <!-- <equality>
+    <joint name="finger_slide_1" joint1="finger_A_slide_joint" joint2="finger_B_slide_joint" polycoef="0 1 0 0 0" solref="0.002 1" />
+    <joint name="finger_slide_2" joint1="finger_A_slide_joint" joint2="finger_C_slide_joint" polycoef="0 1 0 0 0" solref="0.002 1" />
+  </equality> -->
+  <actuator>
+    <motor name="actuator1" joint="fr3_joint1" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator2" joint="fr3_joint2" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator3" joint="fr3_joint3" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator4" joint="fr3_joint4" ctrllimited="true" ctrlrange="-87.0 87.0" />
+    <motor name="actuator5" joint="fr3_joint5" ctrllimited="true" ctrlrange="-12.0 12.0" />
+    <motor name="actuator6" joint="fr3_joint6" ctrllimited="true" ctrlrange="-12.0 12.0" />
+    <motor name="actuator7" joint="fr3_joint7" ctrllimited="true" ctrlrange="-12.0 12.0" />
+    <!-- MATCH-MPPI_Reach: nu 8 -> 7. -->
+    <!-- <position name="grab_motor" joint="finger_A_slide_joint" kp="1000" kv="40" ctrllimited="true" ctrlrange="-0.1 0.1" forcerange="-10 10" /> -->
+  </actuator>
+</mujoco>

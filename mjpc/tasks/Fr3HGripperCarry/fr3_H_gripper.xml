@@ -47,6 +47,21 @@
   </default>
 
   <asset>
+    <!-- Real scanned object, replacing the box primitive for VISUALS only.
+         meshdir is "assets", which for this task is a symlink to ../Fr3/assets -- so a mesh
+         path is resolved from THERE, not from this task's directory. Hence the
+         ../../Fr3HGripperCarry/ prefix: plain "obj/textured_simple.obj" becomes
+         "assets/obj/..." and fails. texturedir is unset, so the texture path below is
+         relative to this XML instead and needs no prefix. texturedir is unset, so the texture path is
+         relative to this XML's directory.
+         Measured bounding box: 49.5 x 94.1 x 176.0 mm, centre offset
+         (0.0009, -0.0015, -0.0044) from the mesh origin -- the geom pos below cancels
+         that so the mesh lines up with the collision box. -->
+    <!-- NO texture: textured_simple.obj carries 0 "vt" lines, so there are no UVs for
+         obj/texture_map.png to map onto and MuJoCo projects it arbitrarily. Flat colour
+         until a mesh WITH texture coordinates is available. Nothing in the task reads
+         appearance, so this costs nothing but looks. -->
+    <mesh name="sugar_mesh" file="../../Fr3HGripperCarry/obj/textured_simple.obj"/>
     <material name="black" rgba=".2 .2 .2 1" />
     <material name="white" rgba="1 1 1 1" />
     <material name="red" rgba="1 0.072272 0.039546 1" />
@@ -241,12 +256,19 @@
 
                       
                       
-                      <site name="hand_site" pos="0 0 0.365" group="0" />
+                      <!-- 0.310, not 0.365: the point the REAL controller reports as its EE, measured
+                       on hardware from the live q. Matching it took the model-vs-hardware
+                       FK gap from 57.0 mm to 2.0 mm. Same change as Fr3HGripperReach. -->
+                  <site name="hand_site" pos="0 0 0.310" group="0" />
                       <site name="frame_x" type="cylinder" pos="0.04 0 0.34" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
                       <site name="frame_y" type="cylinder" pos="0 0.04 0.34" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
                       <site name="frame_z" type="cylinder" pos="0 0 0.38" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
 
-                      <body name="hand" childclass="H_gripper" pos="0 0 0.220" gravcomp="0">
+                      <!-- euler = -90 deg about the flange normal: the H-gripper is BOLTED ON at that
+                       angle on the real arm. Same value as Fr3HGripperReach and the judo
+                       model. hand_site is a child of fr3_link7, not of this body, so this
+                       does not move hand_quat -- it fixes the gripper geometry. -->
+                  <body name="hand" childclass="H_gripper" pos="0 0 0.220" gravcomp="0" euler="0 0 -1.5708">
                         <site name="gripper_site" type="sphere" pos="0 0 0.145" size="0.005" rgba="1 0 0 1" group="0" />
                         <!-- v1 carry: sugar box rigidly grasped (offset 0: box center = TCP).
                              Rigid child of hand => its 0.5 kg mass is in the arm dynamics /
@@ -355,6 +377,7 @@
                                           <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_A_sub_link_12" />
                                           <site name="finger1_site" type="sphere" pos="-0.012 0.0 0.02" size="0.005" rgba="1 0 0 1" group="0" />
                                           <geom name="gripper_pad_1" class="fingertip_pad_collision_2" />
+                                          <site name="gripper_pad_1_site" type="box" size="0.006 0.009 0.0155" pos="-0.012 0.0 0.018" rgba="0 1 0 0.25" group="4"/>
                                         </body>
                                       </body>
                                     </body>
@@ -447,6 +470,7 @@
                                             <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_B_sub_link_12" />
                                             <site name="finger2_site" type="sphere" pos="0.012 0.0 0.02" size="0.005" rgba="1 0 0 1" group="0" />
                                             <geom name="gripper_pad_2" class="fingertip_pad_collision_1" />
+                                          <site name="gripper_pad_2_site" type="box" size="0.006 0.009 0.0155" pos="0.012 0.0 0.018" rgba="0 1 0 0.25" group="4"/>
                                           </body>
                                         </body>
                                       </body>
@@ -556,6 +580,7 @@
                                             <geom type="mesh" group="1" rgba="0.309804 0.309804 0.309804 1" mesh="finger_C_sub_link_12" />
                                             <site name="finger3_site" type="sphere" pos="0.012 0.0 0.02" size="0.005" rgba="1 0 0 1" group="0" />
                                             <geom name="gripper_pad_3" class="fingertip_pad_collision_1" />
+                                          <site name="gripper_pad_3_site" type="box" size="0.006 0.009 0.0155" pos="0.012 0.0 0.018" rgba="0 1 0 0.25" group="4"/>
                                           </body>
                                         </body>
                                       </body>
@@ -577,8 +602,30 @@
          contype/conaffinity=1 -> collides with the fingertip pads (group 1) and floor. -->
     <body name="sugar_box" pos="0.5 0 0.088">
       <freejoint name="box_free"/>
-      <geom name="sugar_box_geom" type="box" size="0.0225 0.045 0.0875" mass="0.5"
-            rgba="0.9 0.75 0.1 1" contype="1" conaffinity="1"/>
+      <!-- mass 0.5. DO NOT drop this to ~10 g. Tried 0.01 kg to remove the payload
+           mismatch against an empty real hand, and it broke the task in 3/3 runs: the
+           object was pinched, then flung out of the pads mid-carry and the arm diverged.
+           Two reasons, both about the box being too light rather than about the plan:
+             * the pads are driven by a kp=1000 position actuator, and a 10 g body simply
+               loses that argument -- it squirts out from between them (the same failure
+               the finger-slide coupling comment further down was written for);
+             * once it leaves, Object_tgt (3e6) is a huge cost on an object the arm no
+               longer controls, so the planner answers with everything it has.
+           The payload mismatch is real, but the fix is to use the OBJECT'S ACTUAL MASS,
+           not to make it nearly massless. The tuned Object_tgt/Carry_vel weights in
+           task.xml were measured at 0.5 kg.
+           CONTACT geom: still a box, now at the mesh's measured half-extents
+           (49.5/2, 94.1/2, 176.0/2 mm). Kept as a primitive on purpose -- MuJoCo would
+           collide a mesh through its convex hull, and paying for that on every one of
+           32 rollouts x 0.225 s is not affordable on this machine. group 3 = the
+           model's collision group, so it does not clutter the view. -->
+      <geom name="sugar_box_geom" type="box" size="0.02475 0.04705 0.088" mass="0.5"
+            rgba="0.9 0.75 0.1 0.3" contype="1" conaffinity="1" group="3"/>
+      <!-- VISUAL geom: the scanned mesh. No collision, no mass (the box above owns
+           both), pos cancels the mesh's bounding-box centre offset. -->
+      <geom name="sugar_mesh_geom" type="mesh" mesh="sugar_mesh"
+            rgba="0.85 0.7 0.15 1" pos="-0.0009 0.0015 0.0044" mass="0"
+            contype="0" conaffinity="0" group="1"/>
       <site name="object_site" pos="0 0 0" size="0.008" rgba="0.9 0.75 0.1 1" group="0"/>
     </body>
   </worldbody>
@@ -658,4 +705,17 @@
          (real gripper's set grasp force). kv damps the fast slide. -->
     <position name="grab_motor" joint="finger_A_slide_joint" kp="1000" kv="40" ctrllimited="true" ctrlrange="-0.1 0.1" forcerange="-10 10"/>
     </actuator>
+  <!-- FINGERTIP TOUCH SENSORS. Reading contact through sensors instead of scanning
+       data->contact for hardcoded geom names ("sugar_box_geom") matters twice over: it does
+       not break when the object changes, and it mirrors what the hardware actually gives us
+       -- GripperStatus carries a binary CONTACT bit, so a thresholded touch force is the
+       same kind of signal on both sides.
+       These are mjSENS_TOUCH, not mjSENS_USER, so they do not affect the user-sensor
+       dimension that Residual() must match. -->
+  <sensor>
+    <touch name="pad1_touch" site="gripper_pad_1_site"/>
+    <touch name="pad2_touch" site="gripper_pad_2_site"/>
+    <touch name="pad3_touch" site="gripper_pad_3_site"/>
+  </sensor>
+
 </mujoco>

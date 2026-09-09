@@ -1,0 +1,224 @@
+<mujoco model="Fr3HGripperPick">
+  <size memory="50M" nuserdata="5"/>
+
+  <!-- PICK: one-arm pick & carry, built per pick_vs_carry_changes.md.
+       Derived from Fr3HGripperCarry (NOT from Reach as the document's version was) so
+       that the hardware wiring survives: /mjpc_bridge torque mode, /judo_gripper,
+       /mjpc_object, the CSV logger and the injection-hold latch all live in the Carry
+       task and none of them exist in Reach.
+       What is taken from the document is the part that mattered: the cost structure
+       (section 3 -- no object costs at all), the phase machine (section 5) and the
+       planner settings (section 2). Fr3HGripperCarry itself is untouched. -->
+  <custom>
+    <numeric name="agent_planner" data="9" />          <!-- FlowMPPIRpy, same as Carry -->
+    <!-- horizon 0.225 -> 0.4: with a short horizon the deceleration point sits outside
+         the preview and the arm shoves the box (138-293 mm -> 21.8 mm measured). -->
+    <!-- 0.20, not the 0.30 in Reach's xml. 0.30 measurably loosened target tracking
+         here, and 0.20 is both what CMD.md's saved Reach line uses and the horizon at
+         which Reach's residual jitter was cut 8x with sigma_adapt min=0.10. With
+         dc_noise=1 the search is ONE constant torque offset per joint over the whole
+         horizon, so a longer horizon holds that offset longer and resolves less. -->
+    <numeric name="agent_horizon" data="0.20" />
+    <!-- 0.03. REVERTED from 0.01: at 0.01 phase 1 stopped working, so whatever the
+         document says the Reach value is, this task is not currently able to run there.
+         Two candidate mechanisms, NEITHER verified yet:
+           (a) the phase-1 settle test needs hand_spd < 0.06 m/s, and hand_spd is a
+               one-step finite difference -- at dt 0.01 the same physical jitter reads
+               3x larger than at 0.03, so the test may simply never pass.
+           (b) horizon 0.4 at dt 0.01 is a 40-step rollout instead of 13, so the plan
+               time roughly triples and the planner may be missing its budget.
+         Fix (a) by filtering the speed estimate, (b) by shortening the horizon. Until
+         one of them is measured, this stays at 0.03. -->
+    <numeric name="agent_timestep" data="0.01" />
+    <numeric name="agent_policy_width" data="0.0035" />
+    <numeric name="sampling_trajectories" data="64"/>   <!-- 128 was 34 ms/plan for no gain -->
+    <!-- knots 30 -> 16: at dt 0.03 thirty knots are finer than the executed steps. -->
+    <numeric name="sampling_spline_points" data="5" />
+    <numeric name="sampling_representation" data="0" />
+    <!-- 1.5, with sigma_adapt_min dropped to 1/1.5 of its old value so the two changes
+         cancel where it matters. VERIFIED formula (FlowMPPI/planner.cc:1451-1472):
+             sigma_k = std_per_joint[k] * sampling_exploration * adapt_scale
+         and adapt_scale runs in [min, 1]. So:
+             settled  sigma = std * exploration * min
+             disturbed sigma = std * exploration
+         Raising exploration 1.0 -> 1.5 and min 0.10 -> 0.0667 leaves the settled sigma
+         at 2 * 1.5 * 0.0667 = 0.2 Nm, exactly what it was, while the disturbed sigma
+         goes 2.0 -> 3.0 Nm. That buys back the compliance that was lost going from
+         H=0.30 to H=0.20 WITHOUT touching the settled tracking that H=0.20 restored --
+         those two were fighting over one knob (horizon) and this separates them. -->
+    <numeric name="sampling_exploration" data="1.5" />
+    <!-- 10, which is what the Reach task is actually run with. It was 1000, copied
+         from the Carry-derived numbers in pick_vs_carry_changes.md section 2 -- but the
+         "0.65 / 1.61 / 2.12 mm" convergence that document praises was measured on the
+         REACH task's planner settings, and Reach uses lambda 0.1 in its xml and 10 on
+         the command line. At 1000 the softmax is nearly a uniform average over
+         rollouts, which cannot converge tightly: measured 10.9-23.0 mm of wander in
+         phase 1 where Reach gets low single digits.
+         fm_config.yaml sets lambda too and WINS via setenv_if_unset, so both files
+         carry the same number. -->
+    <numeric name="sampling_lambda" data="10" />
+    <numeric name="sampling_dc_noise" data="1" />
+    <!-- size MUST equal model->nu (7 arm + grab_motor) or the planner calls mju_error_i.
+         The last entry is the GRIPPER std, 0.05 -> 0.01: planner 14 uses this as the
+         command-unit std directly, and on a +-0.1 command range 0.05 means half the
+         signal is noise. That was the open/close chatter seen in the GUI. -->
+    <!-- last entry 0: the gripper is NOT in the MPPI search any more. The phase machine
+         commands it and app.cc applies that after ActionFromPolicy, so noise here would
+         only fight a channel nothing optimises. Size must still equal model->nu or the
+         planner calls mju_error_i. -->
+    <numeric name="sampling_std_per_joint" size="8" data="2 2 2 2 1 1 1 0" />
+    <numeric name="gradient_spline_points" data="6" />
+    <!-- adaptive sigma ON (Carry has it OFF). Gate = residual[0..6) = Reach_pos+Reach_ori,
+         which is why those two are the FIRST two blocks of the residual. -->
+    <numeric name="sampling_sigma_adapt" data="1"/>
+    <numeric name="sampling_sigma_adapt_min" data="0.0667"/>   <!-- = 0.10 / 1.5; see sampling_exploration -->
+    <numeric name="sampling_sigma_adapt_decay" data="0.9"/>
+    <numeric name="sampling_sigma_adapt_thr" data="0.003"/>
+    <numeric name="sampling_sigma_adapt_thr_ori" data="0.017"/>
+    <numeric name="sampling_sigma_adapt_hyst" data="2"/>
+    <!-- 1000, back to the value this task ran with before the H=0.30 experiment.
+         The Reach COMMAND leaves GROW unset and so gets the planner default of 8, but
+         that only governs how fast sigma climbs back after a disturbance
+         (scale = min(1, scale*grow) once e > hyst) -- at 1000 it recovers in one step,
+         at 8 it takes two or three. It does not affect settled tracking, so it is free
+         to keep at the faster value. -->
+    <numeric name="sampling_sigma_adapt_grow" data="1000"/>
+    <numeric name="sampling_sigma_adapt_res_off" data="0"/>
+    <numeric name="sampling_sigma_adapt_res_dim" data="6"/>
+    <numeric name="q_fm_target" size="7" data="0 -0.6 0 -2.2 0 1.6 0.8"/>
+
+    <!-- ==================== phase machine (section 5) ====================
+         residual_pick_phase is the ONE piece of phase state the residual sees, and the
+         only thing it switches is which of the two gripper terms is active. The arm
+         costs are identical in every phase; what the phase machine actually does is
+         move the mocap target. Rollouts never evaluate a phase transition. -->
+    <numeric name="residual_pick_phase" data="1"/>
+    <numeric name="pick_pre_off"     data="0.07"/>   <!-- pre-grasp standoff above the face -->
+    <!-- 0.087 = the box half-height, so the grasp point IS the object's origin.
+         An earlier note here claimed a 10.3 mm limit set by finger_*_sub_bolt_link_3.
+         That was measured at a slide of 0.0341, which drives the pads 4 mm INTO the
+         box and drags the bolts in with them. Re-measured properly, with the box
+         centre placed at the jaw midpoint:
+           slide 0.0301 (just touching) : 4 pad contacts, 0 non-pad contacts
+           slide 0.0341 (4 mm over)     : bolts touch, 3.2 mm deep
+         Real contact penetration in a running grasp is 0.2-0.3 mm, and the bolts sit
+         0.8 mm outboard of the pad faces, so they clear. Nothing else is inside the
+         box column: every other finger geom is at |y| >= 25.6 mm against a 20 mm box
+         half-width. The gripper straddles the box down to its mid-height.
+         Grasping at the centre also removes the torque arm -- at 8 mm the pads held a
+         174 mm box by its top lip with the mass 79 mm below the grip. -->
+    <numeric name="pick_grasp_depth" data="0.087"/>
+    <numeric name="pick_arrive_tol"  data="0.020"/>  <!-- hand<->guide, for the close trigger -->
+    <numeric name="pick_settle"      data="0.25"/>   <!-- wait after arrival before closing -->
+    <!-- delay between commanding the close and welding: the fingers need time to reach
+         the box, and on the real robot the width command answers late. -->
+    <!-- 4.0 s, sized for HARDWARE. The sim fingers shut in milliseconds but the real
+         unit travels ~18 mm/s, so 95 -> 32 mm is 63 mm = 3.5 s. This delay is the ONLY
+         thing standing between "close commanded" and "weld the box into the hand" --
+         Pick does not test for a grasp any more -- so if it fires early the sim carries
+         a phantom while the real fingers are still open and the box gets shoved.
+         For sim-only runs 0.7 is plenty and 4.0 just wastes wall clock; override with
+         the numeric, not a rebuild. -->
+    <numeric name="pick_close_wait"  data="1.5"/>
+    <numeric name="pick_grip_close"  data="0.05"/>   <!-- grab_motor command, fully shut -->
+    <numeric name="pick_lift_clear"  data="0.05"/>   <!-- straight-up clearance before transport -->
+    <numeric name="pick_app_lag"     data="0.020"/>  <!-- guide lead at full speed -->
+    <numeric name="pick_app_stop"    data="0.060"/>  <!-- guide lead at which it halts -->
+    <!-- TRANSPORT guide speed: v = clamp(gain x remaining, vmin, vmax). This is the
+         floor on phase-3 tracking error (v x arm lag), so lowering vmax trades
+         transport time for accuracy. -->
+    <!-- 0 = go straight to the final hand pose (what the lift needs: Reach_pos is
+         linear only outside p_smooth = 30 mm, so a nearby guide pulls with nothing).
+         Set > 0 to restore the ramp if the box scrapes the floor on the way out. -->
+    <numeric name="pick_carry_vmax"  data="0.15"/>   <!-- 0 = jump straight to the pose -->
+    <!-- Lag band for the transport guide, WIDER than the approach's 20/60 on purpose:
+         Reach_pos is quadratic inside p_smooth = 30 mm, so a guide closer than that
+         pulls with almost nothing and it is the only term that lifts the box. -->
+    <numeric name="pick_carry_lag"   data="0.040"/>
+    <numeric name="pick_carry_stop"  data="0.100"/>
+    <numeric name="pick_carry_vmin"  data="0.02"/>
+    <numeric name="pick_carry_gain"  data="3.0"/>
+  </custom>
+
+  <statistic extent="0.8" center="0.3 0 0.4"/>
+  <visual>
+    <global azimuth="120" elevation="-20"/>
+    <scale framelength="0.3" framewidth="0.03"/>
+  </visual>
+
+  <asset>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <site name="world"/>
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true" diffuse="0.7 0.7 0.7"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- mocap 0: the HAND target the phase machine drives. Unlike Carry's marker this
+         is not the object's goal -- the arm costs track it directly, so it moves every
+         step and is not meant to be dragged. -->
+    <body name="target" mocap="true" pos="0.5 0 0.35" quat="0 1 0 0">
+      <geom type="sphere" size="0.018" rgba="0.2 0.6 1 0.5" contype="0" conaffinity="0"/>
+      <site name="target_site" pos="0 0 0" size="0.010" rgba="0.2 0.6 1 1" group="0"/>
+    </body>
+
+    <!-- mocap 1: where the OBJECT has to end up. Drag this one. Position is commanded;
+         orientation is not (no object cost reads it). -->
+    <body name="object_goal" mocap="true" pos="0.45 0.25 0.30" quat="1 0 0 0">
+      <geom name="object_goal_geom" type="box" size="0.0200 0.0470 0.087"
+            rgba="0.9 0.75 0.1 0.25" contype="0" conaffinity="0"/>
+      <site name="object_goal_site" pos="0 0 0" size="0.010" rgba="0.9 0.75 0.1 1" group="0"/>
+    </body>
+  </worldbody>
+
+  <!-- ==================== cost (section 3) ====================
+       43 dims. Reach_pos and Reach_ori MUST stay first: sampling_sigma_adapt_res_off=0
+       with res_dim=6 reads exactly those six.
+       There is NO object cost of any kind -- no Object_tgt, no Grasp_align, no
+       FM_track. The lifting force comes entirely from Reach_pos: the hand target rises
+       while the pads hold the box. That is the whole point of the rewrite; Carry's
+       object costs are what pushed the box 140-190 mm. -->
+  <sensor>
+    <user name="Reach_pos"         dim="3" user="2 1000000 0 5000000  0.03"/>
+    <user name="Reach_ori"         dim="3" user="2 50000   0 500000   0.01"/>
+    <user name="joint_cent"        dim="7" user="2 20      0 5000     1"/>
+    <user name="joint_vel_penalty" dim="7" user="2 500     0 5000     0.01"/>
+    <user name="u_reg"             dim="7" user="2 0.01    0 1        0.01"/>
+    <!-- ALIGNED TO Fr3HGripperReach, term for term and weight for weight.
+         Removed relative to the earlier Pick: joint_limit (5e6) and nullspace_vel
+         (5000), which Reach's own xml says it deliberately does not have, and
+         Reach_ori went 600000 -> 50000. Those came from pick_vs_carry_changes.md
+         section 3, and section 3 was tuned against Carry, not against the Reach
+         convergence the document quotes.
+         NO gripper cost and NO object cost. This is Fr3HGripperReach's cost set, term
+         for term; the box exists in the model only. Grip_ready / Grip_hold are gone
+         because the gripper is COMMANDED by the phase machine, not planned. 41 dims. -->
+
+    <framepos  name="hand"               objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient"        objtype="site" objname="hand_site"/>
+    <framepos  name="hand_target"        objtype="site" objname="target_site"/>
+    <framequat name="hand_target_orient" objtype="site" objname="target_site"/>
+    <!-- grasp point between the pads. MEASURED 53 mm ahead of hand_site (an older
+         comment in the Carry task said 145 mm; that was wrong and mis-set thresholds
+         twice). Not used by the arm costs here, but the phase machine and the
+         injection-hold latch both measure from it. -->
+    <framepos  name="gripper"            objtype="site" objname="gripper_site"/>
+    <framepos  name="object"             objtype="site" objname="object_site"/>
+    <framepos  name="trace0"             objtype="site" objname="hand_site"/>
+
+    <!-- measurement aliases for hgripper_settle_eval; not user sensors -->
+    <framequat name="hand_quat"   objtype="site" objname="hand_site"/>
+    <framepos  name="target"      objtype="site" objname="target_site"/>
+    <framequat name="target_quat" objtype="site" objname="target_site"/>
+  </sensor>
+
+  <include file="fr3_H_gripper_pick.xml"/>
+
+  <keyframe>
+    <!-- arm 7 + finger slides A/B/C (open = 0) + free box 7 -->
+    <key name="home" qpos="0 -0.6 0 -2.2 0 1.6 0.8  0 0 0  0.5 0 0.087 1 0 0 0"/>
+  </keyframe>
+</mujoco>
