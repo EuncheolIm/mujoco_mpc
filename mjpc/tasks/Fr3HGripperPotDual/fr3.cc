@@ -144,6 +144,14 @@ void FR3HGripperPotDual::ResidualFn::Residual(const mjModel* model,
     return 0.020;
   }();
   const double kOverflowGain = 140.0;
+  static const double cbf_alpha = []() {
+    if (const char* e = std::getenv("MJPC_PD_CBF_ALPHA"); e && e[0]) return std::atof(e);
+    return 2.0;   // 1/s: d=3cm 에서 6cm/s 까지 허용
+  }();
+  static const double cbf_v0 = []() {
+    if (const char* e = std::getenv("MJPC_PD_CBF_V0"); e && e[0]) return std::atof(e);
+    return 0.02;  // m/s: 도달속도 상한
+  }();
 
   for (int a = 0; a < 2; a++) {
     double* h  = SensorByName(model, data, h_name[a]);
@@ -259,6 +267,78 @@ void FR3HGripperPotDual::ResidualFn::Residual(const mjModel* model,
     c += 6;
   }
 
+  // 10. 물체<->환경 접촉력 (1): 냄비가 바닥에 주는 법선력의 합 [N].
+  // MPPI 는 스테이지 비용을 시간에 대해 합하므로 이 항의 시간적분 = 충격량이다.
+  // 팔별 힘이 아니라 외력 하나만 본다 -- 팔별 weld 힘을 벌하면 1 kg 을 드는 행위
+  // 자체가 벌점이 되어 파지를 놓는 방향으로 샌다. 내력은 Internal 항이 따로 본다.
+  // 파지 전(phase < 3)에는 냄비가 그냥 바닥에 놓여 있으므로 비활성.
+  {
+    double fsum = 0.0;
+    const bool carrying = parameters_.size() >= 8 && parameters_[7] >= 2.9;
+    const int fl = mj_name2id(model, mjOBJ_GEOM, "floor");
+    const int pb = mj_name2id(model, mjOBJ_BODY, "pot");
+    if (carrying && fl >= 0 && pb >= 0) {
+      for (int i = 0; i < data->ncon; i++) {
+        const int g1 = data->contact[i].geom[0], g2 = data->contact[i].geom[1];
+        const bool pf = (g1 == fl && model->geom_bodyid[g2] == pb) ||
+                        (g2 == fl && model->geom_bodyid[g1] == pb);
+        if (!pf) continue;
+        double f6[6];
+        mj_contactForce(model, data, i, f6);
+        fsum += mju_abs(f6[0]);
+      }
+    }
+    residual[c++] = fsum;
+  }
+
+  // 12. 접근속도 제한 (1): 남은 표면거리 d 에 비례해 접근속도를 제한한다.
+  //   residual = max(0, v_approach - alpha * d)
+  // 충격량 ~= 유효질량 x 도달속도이므로, 접촉력을 벌하는 것만으로는 피크가 포화한다
+  // (측정: w 1e5 -> 1e6 에서 54 -> 57 N, 변화 없음). 줄여야 하는 건 '닿는 순간의 속도'다.
+  // d 는 mj_geomDistance 로 냄비 바닥 콜라이더와 지지면 사이를 직접 질의한다. 접촉이
+  // 생기기 전에도 값이 나오고 물리는 전혀 건드리지 않는다(margin/gap 을 쓰면 바닥
+  // 접촉 자체가 죽는 것을 측정으로 확인했다: floorF=0 인데 냄비가 3.4cm 가라앉음).
+  // 표면 높이를 가정하지 않으므로 표면이 어긋나 있어도 그대로 유효하다.
+  {
+    const bool carrying = parameters_.size() >= 8 && parameters_[7] >= 2.9;
+    const int fl = mj_name2id(model, mjOBJ_GEOM, "floor");
+    const int pg = mj_name2id(model, mjOBJ_GEOM, "pot_body_col");
+    const int pb = mj_name2id(model, mjOBJ_BODY, "pot");
+    double r = 0.0;
+    if (carrying && fl >= 0 && pg >= 0 && pb >= 0) {
+      const double kSense = 0.10;   // 이 거리 안에서만 감지 (밖이면 제한 없음)
+      const double dmin =
+          mju_max(0.0, mj_geomDistance(model, data, pg, fl, kSense, nullptr));
+      if (dmin < kSense) {
+        // 평면 바닥이므로 접근속도 = 냄비의 하강 속도.
+        double v6[6];
+        mj_objectVelocity(model, data, mjOBJ_BODY, pb, v6, 0);
+        const double v_app = -v6[5];
+        // 허용속도에 하한 v0 을 둔다. alpha*d 만이면 d->0 에서 허용속도도 0 이라
+        // 점근적으로만 접근해 영원히 닿지 않는다(측정: 착지 없음). v0 이 곧 도달속도
+        // 상한이고, 충격량 ~= m_eff * v0 이므로 이 값이 피크를 직접 정한다.
+        r = mju_max(0.0, v_app - cbf_alpha * dmin - cbf_v0);
+      }
+    }
+    residual[c++] = r;
+  }
+
+  // 11. 냄비 -> 배치 목표 (3): 지금까지 배치는 전적으로 레퍼런스가 끌고 갔고 비용에는
+  // 물체의 목표가 없었다. 마지막 구간을 MPPI 에게 넘기려면(레퍼런스 정지) 물체의
+  // 목표가 비용 안에 있어야 한다. 그래야 "목표까지 간다"와 "세게 박지 않는다"(Impact)
+  // 가 같은 softmax 안에서 저울질된다. 파지 전에는 0.
+  {
+    const bool carrying = parameters_.size() >= 8 && parameters_[7] >= 2.9;
+    const int pb = mj_name2id(model, mjOBJ_BODY, "pot");
+    if (carrying && pb >= 0 && model->nmocap > 2) {
+      const double* goal = data->mocap_pos + 6;   // mocap 2 = pot_goal
+      for (int i = 0; i < 3; i++) residual[c + i] = data->xpos[3 * pb + i] - goal[i];
+    } else {
+      for (int i = 0; i < 3; i++) residual[c + i] = 0.0;
+    }
+    c += 3;
+  }
+
   int user_sensor_dim = 0;
   for (int i = 0; i < model->nsensor; i++) {
     if (model->sensor_type[i] == mjSENS_USER) {
@@ -319,6 +399,8 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
   const double rot_w     = knob("pd_rot_w", "MJPC_PD_ROT_W", 0.3);       // rad/s
   const double rot_alpha = knob("pd_rot_alpha", "MJPC_PD_ROT_ALPHA", 2.0);
   const double done_ang  = knob("pd_done_ang", "MJPC_PD_DONE_ANG", 0.10); // rad
+  const double trim_ki   = knob("pd_trim_ki", "MJPC_PD_TRIM_KI", 0.0);    // 1/s
+  const double trim_max  = knob("pd_trim_max", "MJPC_PD_TRIM_MAX", 0.05); // m
 
   // ---- 그리퍼 직접 지령 / weld ----
   auto set_grip = [&](double u) {
@@ -353,6 +435,10 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
         }
       }
       data->eq_active[eq] = on ? 1 : 0;
+      // 플래너는 모델 복사본을 쓰므로 eq_active 가 롤아웃에 전달되지 않는다.
+      // userdata 는 state 를 통해 롤아웃까지 실리므로, 여기에 파지 상태를 실어
+      // 플래너(MJPC_PLAN_WELD=<slot>)가 자기 모델에 같은 weld 를 켜게 한다.
+      if (eq < model->nuserdata) data->userdata[eq] = on ? 1.0 : 0.0;
     }
   };
 
@@ -485,11 +571,62 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
       const double* goal = data->mocap_pos + 6;      // mocap 2 = 냄비 목표
       double dtot[3];
       for (int i = 0; i < 3; i++) dtot[i] = goal[i] - pot_at_grasp_[i];
-      const double zc = mju_min(clear_z, mju_max(0.0, dtot[2]));
+      // place_lift > 0 이면 목표가 시작과 같은 높이(=바닥 안착)라도 상승 구간을 강제한다.
+      // 그래야 2구간 경로의 두 번째 다리가 목표로 '내려가고', 착지(touchdown)가 생긴다.
+      // 0 이면 기존 동작(상승은 목표가 위에 있을 때만) 그대로.
+      const double place_lift = knob("pd_place_lift", "MJPC_PD_PLACE_LIFT", 0.0);
+      const bool cbf_ref = knob("pd_cbf_ref", "MJPC_PD_CBF_REF", 0.0) > 0.5;
+      const double cbf_alpha = knob("pd_cbf_alpha", "MJPC_PD_CBF_ALPHA", 2.0);
+      const double cbf_v0 = knob("pd_cbf_v0", "MJPC_PD_CBF_V0", 0.02);
+      // 정지는 '실제 접촉'에서만. 여유 거리에서 멈추면 냄비가 그 높이에 떠 버린다
+      // (측정: dstop 5 mm -> 정착 floorF 0 N, potz 0.125 = 바닥에 안 앉음).
+      // CBF 가 d->0 에서 속도를 v0 로 낮추므로 마지막 몇 mm 는 기어서 닿는다.
+      const double cbf_dstop = knob("pd_cbf_dstop", "MJPC_PD_CBF_DSTOP", 0.0);
+      const bool contact_latch =
+          knob("pd_contact_latch", "MJPC_PD_CONTACT_LATCH", 1.0) > 0.5;
+      double zc = mju_min(clear_z, mju_max(0.0, dtot[2]));
+      if (place_lift > 0.0) zc = mju_max(zc, place_lift);
       double leg2[3] = {dtot[0], dtot[1], dtot[2] - zc};
       const double len2 = mju_norm3(leg2), path = zc + len2;
-      const double v = mju_min(carry_v, mju_max(carry_vmin, carry_a * (path - arc_)));
-      arc_ = mju_min(path, arc_ + v * dt);
+      // 마지막 구간을 MPPI 에게 넘긴다: 레퍼런스는 목표 thr 앞에서 멈추고(arc 상한),
+      // 그 뒤 냄비를 목표까지 데려가는 일은 Place 항이, 세게 박지 않는 일은 Impact 항이
+      // 맡는다. 레퍼런스가 계속 바닥으로 내려가면 위치항(3e6)이 충격항을 항상 이긴다.
+      const double place_thr = knob("pd_place_thr", "MJPC_PD_PLACE_THR", 0.0);
+      const double arc_cap = (place_thr > 0.0) ? mju_max(0.0, path - place_thr) : path;
+      double v = mju_min(carry_v, mju_max(carry_vmin, carry_a * (arc_cap - arc_)));
+
+      // ---- 접촉 인식 레퍼런스 (CBF) ----
+      // 비용항으로는 접근 속도를 통제할 수 없다(측정: w 1e6~1e8 에서 하강 0.20~0.22 m/s
+      // 불변). 통제된 하강을 만드는 주체는 레퍼런스이므로, 레퍼런스의 진행 속도를
+      // 남은 표면거리에 비례해 제한한다:  v <= alpha*d + v0.
+      // d 는 mj_geomDistance 질의값이라 표면 높이를 가정하지 않는다 -- 표면이 어긋나
+      // 있어도 유효하고, 이게 이 방식의 요점이다. 닿으면(d<=0) 레퍼런스를 그 자리에
+      // 멈춘다: 지령이 표면을 뚫고 계속 내려가는 것이 175 N 짓눌림의 원인이었다.
+      // 도달 속도가 v0 로 상한이 잡히므로 충격량 ~= m_eff * v0 로 직접 정해진다.
+      // 상승/수평 구간에는 걸지 않는다: 운반 시작 시점의 냄비는 바닥에 놓여 있어
+      // d<=0 이므로, 방향을 보지 않으면 리프트 자체가 멈춘다(측정: 냄비 안 들림).
+      const bool descending =
+          (arc_ >= zc - 1e-9) && (len2 > 1e-9) && (leg2[2] / len2 < -1e-3);
+      if (cbf_ref && descending) {
+        const int flg = mj_name2id(model, mjOBJ_GEOM, "floor");
+        const int pgg = mj_name2id(model, mjOBJ_GEOM, "pot_body_col");
+        if (flg >= 0 && pgg >= 0) {
+          const double d = mj_geomDistance(model, data, pgg, flg, 0.20, nullptr);
+          // d<=0 (이미 닿은 뒤)에서 멈추면 늦다: 0.15 m/s 로 접근하다 한 스텝(30 ms)
+          // 늦게 멈추는 것만으로 4.5 mm 를 표면 안으로 밀어넣고, 여기에 MPPI 추종
+          // 지연이 더해져 짓눌림으로 남는다(측정: 정착 40 N). 양의 여유에서 멈춘다.
+          if (d <= cbf_dstop) {
+            v = 0.0;                 // 접촉 임박: 여기서 멈춘다 (뚫는 지령 금지)
+            place_hold_ = true;
+          } else {
+            // 경로 마지막 구간은 거의 수직이므로 경로 속도에 그대로 적용한다.
+            v = mju_min(v, cbf_alpha * d + cbf_v0);
+          }
+        }
+      }
+      arc_ = mju_min(arc_cap, arc_ + v * dt);
+      if (!cbf_ref)
+        place_hold_ = (place_thr > 0.0) && (arc_ >= arc_cap - 1e-9);
       if (arc_ <= zc) {
         delta_[0] = delta_[1] = 0.0;
         delta_[2] = arc_;
@@ -499,6 +636,20 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
         delta_[1] = u * leg2[1];
         delta_[2] = zc + u * leg2[2];
       }
+      // ---- 접촉 순간 레퍼런스 재래치 ----
+      // CBF 가 멈추는 자리는 '레퍼런스가 이미 가 있던 곳'이고, 손은 추종 지연 때문에
+      // 그보다 뒤에 있다(측정: 착지 시 지령이 손보다 9 mm 아래). 바닥이 막고 있으니
+      // 손은 그 지령에 영영 도달하지 못하고, 위치항이 계속 아래로 당겨 24 N 으로
+      // 눌러앉는다. 그래서 접촉을 감지한 순간 지령을 '지금 실제로 도달한 자세'로
+      // 다시 래치한다. 지령 오차가 0 이 되어 누르는 힘이 사라진다.
+      if (place_hold_ && !latched_contact_ && contact_latch) {
+        for (int i = 0; i < 3; i++) {
+          trim_[i] = mju_clip(data->xpos[3 * pb + i] - pot_at_grasp_[i] - delta_[i],
+                              -trim_max, trim_max);
+        }
+        latched_contact_ = true;
+      }
+
       // 회전 지령: 목표 자세까지의 총 회전을 축각으로 구해 rot_ [0,1]로 보간한다.
       // 속도는 위치와 같은 형태로 감속(rot_w 상한, alpha x 남은각도).
       const double* goal_q = data->mocap_quat + 8;      // mocap 2
@@ -512,6 +663,21 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
         rot_ = mju_min(1.0, rot_ + w * dt / ang);
       } else {
         rot_ = 1.0;
+      }
+      // ---- 레퍼런스 트림(적분 작용) ----
+      // 냄비 1 kg 은 보상되지 않고(실기와 동일) MPPI 에는 적분항이 없으므로, 정지한
+      // 레퍼런스에 대해서도 부하만큼 편향이 남는다(측정 45~65 mm). 그 편향만큼 지령을
+      // 밀어준다. 경로 진행이 끝난 뒤에만 적분해서, 이동 중의 정상적인 추종오차를
+      // 편향으로 오해하지 않게 한다(와인드업 방지). 클램프 ±trim_max.
+      // 접촉 상황에서는 트림(레퍼런스 오프셋 적분)을 최종 접근에 쓰지 않는다: 처짐을
+      // 보상하려고 지령을 더 낮추는 동작이 곧 표면을 누르는 동작이 된다(측정: 최종
+      // 접근에서 켜니 피크 57 -> 96 N, 정착 41 -> 64 N). 처짐 보상은 레퍼런스가 아니라
+      // 토크 피드포워드로 해야 하는 일이다. 여기서는 경로 끝(자유공간 정지)에만 쓴다.
+      if (trim_ki > 0.0 && !place_hold_ && arc_ >= path - 1e-9) {
+        for (int i = 0; i < 3; i++) {
+          trim_[i] += trim_ki * (goal[i] - data->xpos[3 * pb + i]) * dt;
+          trim_[i] = mju_clip(trim_[i], -trim_max, trim_max);
+        }
       }
       const double reached = mju_dist3(data->xpos + 3 * pb, goal);
       double qc[4], qe[4], ev[3];
@@ -559,7 +725,7 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
       double rp[3];
       mju_mulMatVec(rp, R_cmd, rel_p_[a], 3, 3);
       for (int i = 0; i < 3; i++)
-        mp[i] = pot_at_grasp_[i] + delta_[i] + rp[i];
+        mp[i] = pot_at_grasp_[i] + delta_[i] + trim_[i] + rp[i];
       mju_mulQuat(mq, q_cmd, rel_q_[a]);
     }
   }
@@ -573,6 +739,9 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
       const char* n = mj_id2name(model, mjOBJ_SENSOR, i);
       for (int a = 0; a < 2; a++)
         if (n && !std::strcmp(n, nm[a])) w_pos_idx_[a] = k;
+      if (n && !std::strcmp(n, "Impact")) w_impact_idx_ = k;
+      if (n && !std::strcmp(n, "Place"))  w_place_idx_ = k;
+      if (n && !std::strcmp(n, "Approach")) w_approach_idx_ = k;
       k++;
     }
     for (int a = 0; a < 2; a++)
@@ -582,11 +751,23 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
   }
   {
     const double mul = knob("pd_w_pos_carry", "MJPC_PD_W_POS_CARRY", 5.0);
+    // 레퍼런스를 멈춘 구간에서는 손 위치항을 낮춘다. 낮추지 않으면 손은 멈춘
+    // 레퍼런스에 붙어 있으려 하고, 그게 곧 Place(냄비를 목표로) 와 정면 충돌한다.
+    const double mul_place = knob("pd_w_pos_place", "MJPC_PD_W_POS_PLACE", 1.0);
     for (int a = 0; a < 2; a++)
       if (w_pos_idx_[a] >= 0 && w_pos_idx_[a] < static_cast<int>(weight.size()))
         weight[w_pos_idx_[a]] =
-            (phase_ >= 3) ? mul * w_pos_base_[a] : w_pos_base_[a];
+            (phase_ >= 3) ? (place_hold_ ? mul_place : mul) * w_pos_base_[a]
+                          : w_pos_base_[a];
+    if (w_place_idx_ >= 0 && w_place_idx_ < static_cast<int>(weight.size()))
+      weight[w_place_idx_] = knob("pd_w_place", "MJPC_PD_W_PLACE", 0.0);
+    if (w_approach_idx_ >= 0 && w_approach_idx_ < static_cast<int>(weight.size()))
+      weight[w_approach_idx_] = knob("pd_w_approach", "MJPC_PD_W_APPROACH", 0.0);
   }
+  // 충격 비용 가중치(기본 0 = 꺼짐). weld 가 플래너에 실려 있어야 의미가 있다:
+  // 롤아웃이 냄비-바닥 접촉을 예측해야 이 항이 순위에 반영된다(MJPC_PLAN_WELD).
+  if (w_impact_idx_ >= 0 && w_impact_idx_ < static_cast<int>(weight.size()))
+    weight[w_impact_idx_] = knob("pd_w_impact", "MJPC_PD_W_IMPACT", 0.0);
   if (parameters.size() >= 8) parameters[7] = static_cast<double>(phase_);
   goal_init_ = true;
 
@@ -649,16 +830,79 @@ void FR3HGripperPotDual::TransitionLocked(mjModel* model, mjData* data) {
         if (p && (p[9] == '5' || p[9] == '6' || p[9] == '7'))
           sat_wr = mju_max(sat_wr, s);
       }
+      // 냄비 <-> 바닥 접촉 법선력의 합. 착지 순간이 이 갈래의 관심 지점이다:
+      // 환경이 저항을 제공해야 두 팔의 불일치(내부 렌치)가 결과를 만든다.
+      double fc = 0.0;
+      for (int i = 0; i < data->ncon; i++) {
+        const char* g1 = mj_id2name(model, mjOBJ_GEOM, data->contact[i].geom1);
+        const char* g2 = mj_id2name(model, mjOBJ_GEOM, data->contact[i].geom2);
+        if (!g1 || !g2) continue;
+        const bool pf = (!std::strncmp(g1, "pot", 3) && !std::strcmp(g2, "floor")) ||
+                        (!std::strncmp(g2, "pot", 3) && !std::strcmp(g1, "floor"));
+        if (!pf) continue;
+        double f6[6];
+        mj_contactForce(model, data, i, f6);
+        fc += f6[0];
+      }
+      // 지령 높이 - 실제 손 높이 [mm]. 음수 = 지령이 손보다 아래 = 위치항이 손을
+      // 아래로 당기는 중(착지 후 짓눌림의 원인 판별용). 중력이 원인이라면 이 값은
+      // 0 근처여야 한다(팔 링크는 이미 gravcomp, 냄비 무게는 팔을 아래로 밀지 않는다).
+      double dz[2] = {0, 0};
+      for (int a = 0; a < 2; a++) {
+        const int hs = mj_name2id(model, mjOBJ_SITE,
+                                  a == 0 ? "l_hand_site" : "r_hand_site");
+        if (hs >= 0)
+          dz[a] = 1000.0 * (data->mocap_pos[3 * a + 2] - data->site_xpos[3 * hs + 2]);
+      }
+      {
+        const int hsL = mj_name2id(model, mjOBJ_SITE, "l_hand_site");
+        const int gsL = mj_name2id(model, mjOBJ_SITE, "l_gripper_site");
+        std::fprintf(stderr,
+                     "        [DZ] tgtL_z=%.4f handL_z=%.4f gripL_z=%.4f "
+                     "dzL=%+7.2f dzR=%+7.2f\n",
+                     data->mocap_pos[2], hsL >= 0 ? data->site_xpos[3 * hsL + 2] : -1,
+                     gsL >= 0 ? data->site_xpos[3 * gsL + 2] : -1, dz[0], dz[1]);
+      }
       std::fprintf(stderr,
                    "[POTD] t=%6.2f ph=%d%s s=%.2f errL=%6.1f errR=%6.1f arc=%5.1f "
                    "dtgt=%6.1f rot=%.2f potz=%.3f weldF=%.1f/%.1fN int=%.1fmm/%.2fdeg "
-                   "sat=%.2f wrist=%.2f\n",
+                   "sat=%.2f wrist=%.2f trim=%.1fmm floorF=%.1fN\n",
                    data->time, phase_, squeeze_ ? "c" : " ", s_app_,
                    1000.0 * mju_dist3(data->site_xpos + 3 * gs[0], data->mocap_pos),
                    1000.0 * mju_dist3(data->site_xpos + 3 * gs[1], data->mocap_pos + 3),
                    1000.0 * arc_,
                    1000.0 * mju_dist3(po, data->mocap_pos + 6), rot_, po[2],
-                   fw[0], fw[1], int_p, int_a, sat_all, sat_wr);
+                   fw[0], fw[1], int_p, int_a, sat_all, sat_wr,
+                   1000.0 * mju_norm3(trim_), fc);
+      {
+        const int flg = mj_name2id(model, mjOBJ_GEOM, "floor");
+        const int pgg = mj_name2id(model, mjOBJ_GEOM, "pot_body_col");
+        double dd = -1.0, vv = 0.0;
+        if (flg >= 0 && pgg >= 0) {
+          dd = mj_geomDistance(model, data, pgg, flg, 0.10, nullptr);
+          double v6[6];
+          mj_objectVelocity(model, data, mjOBJ_BODY, pb, v6, 0);
+          vv = -v6[5];
+        }
+        std::fprintf(stderr, "        [A] d=%.1fmm v_app=%.3f allowed=%.3f r=%.3f\n",
+                     1000.0 * dd, vv, 2.0 * mju_max(0.0, dd) + 0.02,
+                     mju_max(0.0, vv - 2.0 * mju_max(0.0, dd) - 0.02));
+      }
+      std::fprintf(stderr,
+                   "        [W] impact_idx=%d w=%.0f | place_idx=%d w=%.0f | "
+                   "appr_idx=%d w=%.0f | hold=%d wpos=%.0f (nweight=%d)\n",
+                   w_impact_idx_,
+                   (w_impact_idx_ >= 0 && w_impact_idx_ < (int)weight.size())
+                       ? weight[w_impact_idx_] : -1.0,
+                   w_place_idx_,
+                   (w_place_idx_ >= 0 && w_place_idx_ < (int)weight.size())
+                       ? weight[w_place_idx_] : -1.0,
+                   w_approach_idx_,
+                   (w_approach_idx_ >= 0 && w_approach_idx_ < (int)weight.size())
+                       ? weight[w_approach_idx_] : -1.0,
+                   place_hold_ ? 1 : 0,
+                   (w_pos_idx_[0] >= 0) ? weight[w_pos_idx_[0]] : -1.0,
+                   (int)weight.size());
     }
   }
 }

@@ -84,6 +84,21 @@
     <numeric name="pd_rot_w" data="0.3"/>          <!-- 회전 지령 속도 상한 rad/s -->
     <numeric name="pd_rot_alpha" data="2.0"/>      <!-- 남은 각도 비례 감속 1/s -->
     <numeric name="pd_done_ang" data="0.10"/>      <!-- 완료 판정 각오차 rad -->
+    <!-- 레퍼런스 트림(적분). 0 = 끔. 경로 진행이 끝난 뒤에만 적분하고 ±trim_max 로 클램프. -->
+    <numeric name="pd_trim_ki" data="0"/>
+    <numeric name="pd_w_impact" data="0"/>
+    <numeric name="pd_place_thr" data="0"/>     <!-- 이 거리 앞에서 레퍼런스 정지, 이후 MPPI -->
+    <numeric name="pd_w_place" data="0"/>
+    <numeric name="pd_w_approach" data="0"/>
+    <numeric name="pd_cbf_ref" data="0"/>   <!-- 1 = 접촉 인식 레퍼런스 -->
+    <numeric name="pd_cbf_alpha" data="2"/>
+    <numeric name="pd_cbf_v0" data="0.02"/>
+    <numeric name="pd_cbf_dstop" data="0"/>
+    <numeric name="pd_contact_latch" data="1"/>
+    <numeric name="pd_trim_v" data="0.05"/>
+    <numeric name="pd_w_pos_place" data="1"/>   <!-- 정지 구간의 손 위치항 배수 -->
+    <numeric name="pd_place_lift" data="0"/>
+    <numeric name="pd_trim_max" data="0.05"/>
     <numeric name="pd_done_tol" data="0.010"/>
     <numeric name="pd_done_dwell" data="0.3"/>
     <numeric name="pd_w_pos_carry" data="5"/>      <!-- phase 3에서 L_pos/R_pos x배 (냄비 1.0 kg 미보상 부하) -->
@@ -120,7 +135,7 @@
     </body>
 
     <!-- 냄비 목표 (mocap 2, 드래그 가능). 위치만 지령한다. -->
-    <body name="pot_goal" mocap="true" pos="0.55 0 0.32" quat="0.5000000 0.0000000 0.0000000 0.8660254">
+    <body name="pot_goal" mocap="true" pos="0.60 0 0.10" quat="0.7071068 0 0 0.7071068">
       <geom name="pot_goal_ghost" type="mesh" mesh="pot_mesh" contype="0" conaffinity="0"
             group="2" rgba="0.3 0.9 0.5 0.25"/>
       <site name="pot_goal_site" pos="0 0 0" size="0.012" rgba="0.3 0.9 0.5 1" group="0"/>
@@ -156,6 +171,15 @@
          전제 검증용: 단일 softmax에서는 이 항의 weight를 올려도 아무 변화가 없어야
          한다(task 항의 롤아웃 간 변동이 훨씬 커서 순위를 지배하므로). -->
     <user name="Internal" dim="6" user="2 0 0 50000000 0.01"/>
+    <!-- 냄비<->바닥 접촉 법선력 [N]. 시간적분 = 충격량. weight 0 = 기본 비활성,
+         MJPC_PD_W_IMPACT 로 켠다. -->
+    <user name="Impact"   dim="1" user="2 0 0 100000 0.01"/>
+    <!-- 접근속도 제한: max(0, v_approach - alpha*d). d 는 바닥 margin 으로 얻는
+         근접 접촉 거리(표면 높이 가정 없음). weight 0 = 비활성 (MJPC_PD_W_APPROACH). -->
+    <user name="Approach" dim="1" user="2 0 0 100000000 0.01"/>
+    <!-- 냄비 -> 배치 목표. 레퍼런스를 문턱에서 멈춘 뒤 MPPI 가 마지막 구간을 소유하려면
+         물체의 목표가 비용 안에 있어야 한다. weight 0 = 기본 비활성 (MJPC_PD_W_PLACE). -->
+    <user name="Place"    dim="3" user="2 0 0 10000000 0.01"/>
 
     <framepos  name="l_hand"        objtype="site" objname="l_hand_site"/>
     <framequat name="l_hand_quat"   objtype="site" objname="l_hand_site"/>
