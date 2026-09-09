@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <random>
 #include <cstdlib>
 #include <deque>
 #include <fstream>
@@ -1557,17 +1558,32 @@ void FlowMPPIPlanner::AddNoiseToPolicy(double start_time, int i, double scale) {
   // seed so distinct MJPC_SEED values give INDEPENDENT noise realisations that
   // are still reproducible. MJPC_FIXED_SEED with no MJPC_SEED = old (run seed 0)
   // behaviour; neither set = OS-entropy random.
-  absl::BitGen gen_;
+  // **재현성: absl::BitGen 을 쓰면 안 된다.** 같은 seed_seq 를 줘도 실행마다 다른
+  // 수열을 낸다(내부 엔트로피를 섞는다). 실측: 시드 **값**은 두 실행에서 완전히 같은데
+  // (seed=2654501298) 첫 계획의 제어값이 갈렸고, sampling_exploration=0 으로 노이즈를
+  // 없애면 두 실행이 완전히 일치했다 -- 비결정성이 오직 이 난수원에 있었다.
+  // std::mt19937_64 는 표준이 수열을 규정하므로 같은 시드 = 같은 수열이다.
+  // absl::Gaussian/Bernoulli 는 URBG 템플릿이라 엔진만 갈아 끼우면 그대로 동작한다.
+  // 시드를 주지 않으면 예전처럼 OS 엔트로피 -> 기본 동작은 바뀌지 않는다.
+  // 자세한 경위는 이 디렉터리의 DETERMINISM.md.
+  std::mt19937_64 gen_;
   const char* run_sd = std::getenv("MJPC_SEED");
   if (run_sd || std::getenv("MJPC_FIXED_SEED")) {
     uint64_t run_seed = run_sd ? static_cast<uint64_t>(std::atoi(run_sd)) : 0ull;
     uint64_t seed = (run_seed + 1ull) * 2654435761ull
                   + static_cast<uint64_t>(start_time * 1e6) * 1000003ull
                   + static_cast<uint64_t>(i) * 65537ull;
+    // **seed_seq 를 반드시 거친다.** 이 시드는 계획마다 time_us*1000003 씩 선형으로
+    // 증가하는데, mt19937_64::seed(정수) 는 그 값 하나로 상태를 선형 합동으로 채우므로
+    // 인접한 계획의 노이즈가 구조적으로 상관된다. 빼먹었더니 재현은 됐지만 기준선이
+    // 4/6 -> 1/6 으로 떨어졌고, 복원하니 돌아왔다.
     std::seed_seq seq{
         static_cast<unsigned>(seed & 0xFFFFFFFFu),
         static_cast<unsigned>(seed >> 32)};
-    gen_ = absl::BitGen(seq);
+    gen_.seed(seq);
+  } else {
+    std::random_device rd;
+    gen_.seed((static_cast<uint64_t>(rd()) << 32) ^ rd());
   }
 
   // get standard deviation, fixed or mixture of noise_exploration[0,1]
