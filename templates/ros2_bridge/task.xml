@@ -1,0 +1,68 @@
+<mujoco model="ExampleBridge">
+  <size memory="50M"/>
+
+  <!-- TEMPLATE. Minimal task.xml for the arm bridge. Two things here are not optional
+       if you intend to drive the real robot:
+
+       1. The ACTUATORS MUST BE <motor>. The controller reads `action` as N·m. A
+          <position> actuator model paired with mppi_track_controller sends radians
+          where newton-metres are expected -- +-87 rad of commanded angle. Use
+          mppi_pos_controller if you actually want position setpoints.
+       2. gravcomp on the arm links decides which branch of the torque publish runs.
+          "1" here means ctrl is already gravity-free and qfrc_bias must NOT be
+          subtracted; the robot adds its own g(q). Free bodies stay at 0 so they fall.
+
+       Replace the placeholder body chain with your own arm include. The sensor NAMES
+       are what the residual resolves, so keep them. -->
+
+  <custom>
+    <numeric name="agent_planner" data="9"/>            <!-- FlowMPPI -->
+    <numeric name="agent_horizon" data="0.20"/>
+    <numeric name="agent_timestep" data="0.01"/>
+    <numeric name="sampling_trajectories" data="64"/>
+    <numeric name="sampling_spline_points" data="5"/>
+    <numeric name="sampling_representation" data="0"/>  <!-- zero-order: dense torque -->
+    <numeric name="sampling_exploration" data="1.0"/>
+    <numeric name="sampling_lambda" data="10"/>
+    <numeric name="sampling_dc_noise" data="1"/>
+    <!-- size MUST equal model->nu or the planner calls mju_error_i. Raw N·m. -->
+    <numeric name="sampling_std_per_joint" size="7" data="2 2 2 2 1 1 1"/>
+  </custom>
+
+  <worldbody>
+    <light pos="0 0 2" dir="0 0 -1" directional="true"/>
+    <geom name="floor" pos="0 0 0" size="0 0 0.05" type="plane"/>
+
+    <!-- draggable reach target. quat 0 1 0 0 = gripper-down. -->
+    <body name="target" mocap="true" pos="0.5 0 0.4" quat="0 1 0 0">
+      <geom type="sphere" size="0.02" rgba="0.2 0.6 1 0.5" contype="0" conaffinity="0"/>
+      <site name="target_site" size="0.01" rgba="0.2 0.6 1 1"/>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <!-- user = "norm_type weight w_lower w_upper p_smooth"; ORDER must match the
+         residual's concatenation order. Total user dim = 13 here. -->
+    <user name="Reach_pos" dim="3" user="2 1000000 0 5000000 0.03"/>
+    <user name="Reach_ori" dim="3" user="2 50000   0 500000  0.01"/>
+    <user name="u_reg"     dim="7" user="2 0.01    0 1       0.01"/>
+
+    <framepos  name="hand"               objtype="site" objname="hand_site"/>
+    <framequat name="hand_orient"        objtype="site" objname="hand_site"/>
+    <framepos  name="hand_target"        objtype="site" objname="target_site"/>
+    <framequat name="hand_target_orient" objtype="site" objname="target_site"/>
+    <framepos  name="trace0"             objtype="site" objname="hand_site"/>
+  </sensor>
+
+  <!-- Your arm. It must satisfy BOTH:
+         * the 7 arm joints are the FIRST 7 qpos entries (block 2 mirrors qpos[0..6])
+         * a site named hand_site exists on the last link
+       e.g.  <include file="fr3_H_gripper_rigid.xml"/>
+       and if that model references meshes, symlink  assets -> ../Fr3/assets  or the
+       mesh paths do not resolve and the load fails with a bare "Error opening file". -->
+  <!-- <include file="your_arm.xml"/> -->
+
+  <keyframe>
+    <key name="home" qpos="0 -0.78539816 0 -2.35619449 0 1.57079632 0.78539816"/>
+  </keyframe>
+</mujoco>
