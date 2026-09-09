@@ -1215,18 +1215,44 @@ void Agent::Plots(const mjData* data, int shift) {
   // No gravity comp / world rotation needed (older code applied both,
   // which inverted sign and added a -mg offset).
   double F_press_z = 0.0;
+  const char* fz_name = "F_press_z";
   // Silent lookup: hand_force is Fr3-only; G1/other tasks lack it and we
   // don't want a stderr spam every plot tick.
   int hf_id = mj_name2id(model_, mjOBJ_SENSOR, "hand_force");
   if (hf_id >= 0) {
     F_press_z = data->sensordata[model_->sensor_adr[hf_id] + 2];
+  } else {
+    // Fallback for manipulation tasks with no hand_force sensor (e.g. the
+    // dual-arm pot): the quantity of interest at place time is what the
+    // carried object pushes into the support surface with. Sum the contact
+    // normal force over floor <-> FREE-body contacts. Keyed on "free body"
+    // rather than an object name so it works for any carried object; the
+    // robot's own links are welded to the world and never counted.
+    int fl = mj_name2id(model_, mjOBJ_GEOM, "floor");
+    if (fl >= 0) {
+      for (int i = 0; i < data->ncon; i++) {
+        const int g1 = data->contact[i].geom[0], g2 = data->contact[i].geom[1];
+        if (g1 != fl && g2 != fl) continue;
+        const int other = (g1 == fl) ? g2 : g1;
+        const int b = model_->geom_bodyid[other];
+        const int ja = model_->body_jntadr[b];
+        if (model_->body_jntnum[b] != 1 || ja < 0 ||
+            model_->jnt_type[ja] != mjJNT_FREE)
+          continue;
+        double f6[6];
+        mj_contactForce(model_, data, i, f6);
+        F_press_z += mju_abs(f6[0]);   // contact-frame normal
+      }
+      fz_name = "F_contact_z";
+    }
   }
+  mju::sprintf_arr(plots_.planner.title, "%s [N]", fz_name);
   double fz_bounds[2] = {-10.0, 80.0};
   PlotUpdateData(&plots_.planner, fz_bounds,
                  plots_.planner.linedata[0][0] + 1, F_press_z, 100, 0, 0, 1,
                  -100);
   char fz_label[64];
-  std::snprintf(fz_label, sizeof(fz_label), "F_press_z = %+6.2f N", F_press_z);
+  std::snprintf(fz_label, sizeof(fz_label), "%s = %+6.2f N", fz_name, F_press_z);
   mju::strcpy_arr(plots_.planner.linename[0], fz_label);
   plots_.planner.range[1][1] = fz_bounds[1];
   plots_.planner.range[1][0] = fz_bounds[0];

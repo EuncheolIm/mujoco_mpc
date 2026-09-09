@@ -35,7 +35,6 @@
 #include "mjpc/array_safety.h"
 #include "mjpc/agent.h"
 #include "mjpc/policies/fm_config.h"
-#include "mjpc/tasks/Fr3ObstacleQ/fr3_experiment.h"
 #include "mjpc/estimators/estimator.h"
 #include "mjpc/simulate.h"  // mjpc fork
 #include "mjpc/task.h"
@@ -398,7 +397,6 @@ void PhysicsLoop(mj::Simulate& sim) {
       sim.filename = sim.agent->GetTaskXmlPath(sim.agent->gui_task_id);
 
       mjModel* mnew = LoadModel(sim.agent.get(), sim);
-      if (mnew) mjpc::LoadFR3Experiment(mnew);  // fr3_experiment.yaml (no-op if not FR3)
       mjData* dnew = nullptr;
       if (mnew) dnew = mj_makeData(mnew);
       if (dnew) {
@@ -467,6 +465,34 @@ void PhysicsLoop(mj::Simulate& sim) {
 
       if (m) {  // run only if model is present
         sim.agent->ActiveTask()->Transition(m, d);
+
+        // MJPC_PLAN_LOG=<seconds>: print the compute cost the controller is
+        // actually paying, which is what decides whether a config survives on a
+        // slower machine. plan = one planner iteration (rollouts), fm = one FM
+        // prior inference (its own thread), ratio = plan / agent_timestep: above
+        // 1 the plan the arm executes is already stale.
+        {
+          static const double log_dt = []() {
+            const char* e = std::getenv("MJPC_PLAN_LOG");
+            return (e && e[0]) ? std::atof(e) : 0.0;
+          }();
+          if (log_dt > 0.0) {
+            static double t_next = 0.0;
+            static double dt_ctrl = 0.0;
+            if (dt_ctrl == 0.0)
+              dt_ctrl = mjpc::GetNumberOrDefault(0.01, m, "agent_timestep");
+            if (d->time >= t_next) {
+              t_next = d->time + log_dt;
+              const double plan_ms = mjpc::g_plan_time_ms.load();
+              const double fm_ms = mjpc::g_fm_inference_ms.load();
+              std::fprintf(stderr,
+                           "[COMPUTE t=%6.2f] plan %6.2f ms  (dt %.0f ms, ratio "
+                           "%4.2f)   fm %6.2f ms\n",
+                           d->time, plan_ms, 1e3 * dt_ctrl,
+                           plan_ms / (1e3 * dt_ctrl), fm_ms);
+            }
+          }
+        }
 
         // running
         if (sim.run) {
@@ -661,7 +687,6 @@ MjpcApp::MjpcApp(std::vector<std::shared_ptr<mjpc::Task>> tasks, int task_id) {
 
   sim->filename = sim->agent->GetTaskXmlPath(sim->agent->gui_task_id);
   m = LoadModel(sim->agent.get(), *sim);
-  if (m) mjpc::LoadFR3Experiment(m);  // fr3_experiment.yaml (no-op if not FR3)
   if (m) d = mj_makeData(m);
 
   // set home keyframe

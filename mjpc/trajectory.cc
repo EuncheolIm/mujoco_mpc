@@ -15,6 +15,7 @@
 #include "mjpc/trajectory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <iostream>
 
@@ -125,6 +126,20 @@ void Trajectory::NoisyRollout(
 
   // set userdata
   mju_copy(data->userdata, userdata, nuserdata);
+
+  // equality activation: rollout data comes from a pool and keeps whatever the
+  // previous rollout left in eq_active, so re-seed it from the model exactly the
+  // way mj_resetData does. Without this a weld the task switched on (it lives in
+  // mjData, not the model) is invisible to every rollout: the planner keeps
+  // simulating a grasped object as a free body.
+  for (int i = 0; i < model->neq; i++) data->eq_active[i] = model->eq_active0[i];
+  if (const char* e = std::getenv("MJPC_WELD_DBG"); e && e[0] && std::atoi(e)) {
+    static std::atomic<int> n_dbg{0};
+    if ((n_dbg++ % 20000) == 0 && model->neq > 0)
+      std::fprintf(stderr, "[ROLLOUT] eq_active=%d/%d relpose=(%.3f %.3f %.3f)\n",
+                   data->eq_active[0], model->neq > 1 ? data->eq_active[1] : -1,
+                   model->eq_data[3], model->eq_data[4], model->eq_data[5]);
+  }
 
   // set initial state
   mju_copy(states.data(), state, dim_state);
@@ -237,6 +252,20 @@ void Trajectory::RolloutDiscrete(
 
   // set userdata
   mju_copy(data->userdata, userdata, nuserdata);
+
+  // equality activation: rollout data comes from a pool and keeps whatever the
+  // previous rollout left in eq_active, so re-seed it from the model exactly the
+  // way mj_resetData does. Without this a weld the task switched on (it lives in
+  // mjData, not the model) is invisible to every rollout: the planner keeps
+  // simulating a grasped object as a free body.
+  for (int i = 0; i < model->neq; i++) data->eq_active[i] = model->eq_active0[i];
+  if (const char* e = std::getenv("MJPC_WELD_DBG"); e && e[0] && std::atoi(e)) {
+    static std::atomic<int> n_dbg{0};
+    if ((n_dbg++ % 20000) == 0 && model->neq > 0)
+      std::fprintf(stderr, "[ROLLOUT] eq_active=%d/%d relpose=(%.3f %.3f %.3f)\n",
+                   data->eq_active[0], model->neq > 1 ? data->eq_active[1] : -1,
+                   model->eq_data[3], model->eq_data[4], model->eq_data[5]);
+  }
 
   // set initial state
   mju_copy(states.data(), state, dim_state);

@@ -276,6 +276,19 @@ mjpc::spline::SplineInterpolation interpolation_ =
   //   - application AND rollout prediction: the channel is quantised to whichever
   //     of the two commands is nearer, so predicted and executed motion agree.
   // Absent numeric => everything below is skipped and behaviour is unchanged.
+  // ---- FSM 이 직접 지령하는 제어 채널 (샘플링에서 제외) ----
+  // task.xml 의 <numeric name="pin_ctrl_idx" .../> 와 <numeric name="pin_ctrl_slot" .../>
+  // 로 opt-in 한다. 지정한 액추에이터는 노이즈를 받지 않고, 값이 **userdata** 에서 온다.
+  // userdata 는 state 를 통해 롤아웃까지 전파되므로(SetState) 시뮬과 롤아웃이 같은
+  // 지령을 본다 -- MJPC_PLAN_WELD 가 쓰는 것과 같은 경로다.
+  // 왜 필요한가 (실측): H-그리퍼의 ctrlrange 는 ±0.1 인데 task 가 sigma 0.5 를 줬다.
+  // 반범위의 5 배라 거의 모든 샘플이 양 끝으로 포화 -> 매 계획마다 무작위 bang-bang.
+  // 하강 중 "닫힘"이 이기면 손가락이 물체 상면에 걸려 하강이 멈춘다 (실측: 손 z 가
+  // 0.170 에 고정, 지령 대비 +30 mm, 회복 없음). 그리퍼는 FSM 이 상태로 정하는 것이지
+  // MPPI 가 탐색할 자유도가 아니다.
+  std::vector<int> pin_idx_;   // 핀 고정할 액추에이터 인덱스
+  int pin_slot_ = -1;          // userdata[pin_slot_ + j] = pin_idx_[j] 의 지령
+
   bool grip_binary_ = false;
   int grip_idx_ = -1;          // control channel (default: last, nu-1)
   double grip_open_ = 0.0;

@@ -36,114 +36,14 @@ add_library(
   utilities.h
   tasks/tasks.cc
   tasks/tasks.h
-  tasks/acrobot/acrobot.cc
-  tasks/acrobot/acrobot.h
-  tasks/allegro/allegro.cc
-  tasks/allegro/allegro.h
-  tasks/bimanual/insert/insert.cc
-  tasks/bimanual/insert/insert.h
-  tasks/bimanual/handover/handover.cc
-  tasks/bimanual/handover/handover.h
-  tasks/bimanual/reorient/reorient.cc
-  tasks/bimanual/reorient/reorient.h
-  tasks/cartpole/cartpole.cc
-  tasks/cartpole/cartpole.h
-  tasks/fingers/fingers.cc
-  tasks/fingers/fingers.h
-  tasks/humanoid/interact/interact.cc
-  tasks/humanoid/interact/interact.h
-  tasks/humanoid/interact/contact_keyframe.cc
-  tasks/humanoid/interact/contact_keyframe.h
-  tasks/humanoid/interact/motion_strategy.cc
-  tasks/humanoid/interact/motion_strategy.h
-  tasks/humanoid/stand/stand.cc
-  tasks/humanoid/stand/stand.h
-  tasks/humanoid/tracking/tracking.cc
-  tasks/humanoid/tracking/tracking.h
-  tasks/humanoid/walk/walk.cc
-  tasks/humanoid/walk/walk.h
-  tasks/manipulation/common.cc
-  tasks/manipulation/common.h
-  tasks/manipulation/manipulation.cc
-  tasks/manipulation/manipulation.h
-  tasks/op3/stand.cc
-  tasks/op3/stand.h
-  tasks/g1/stand.cc
-  tasks/g1/stand.h
-  tasks/panda/panda.cc
-  tasks/panda/panda.h
-  tasks/particle/particle.cc
-  tasks/particle/particle.h
-  tasks/rubik/solve.cc
-  tasks/rubik/solve.h
-  tasks/shadow_reorient/hand.cc
-  tasks/shadow_reorient/hand.h
-  tasks/quadrotor/quadrotor.cc
-  tasks/quadrotor/quadrotor.h
-  tasks/quadruped/quadruped.cc
-  tasks/quadruped/quadruped.h
-  tasks/swimmer/swimmer.cc
-  tasks/swimmer/swimmer.h
-  tasks/walker/walker.cc
-  tasks/walker/walker.h
 
   # ===== EC ===== #
-  tasks/Fr3/fr3.cc
-  tasks/Fr3/fr3.h
-  tasks/Fr3/cost_fn.cc
-  tasks/Fr3/cost_fn.h
-  tasks/Fr3/dynamics.cc
-  tasks/Fr3/dynamics.h
-  tasks/Fr3Reach/fr3.cc
-  tasks/Fr3Reach/fr3.h
-  tasks/Fr3Reach/cost_fn.cc
-  tasks/Fr3Reach/cost_fn.h
-  tasks/Fr3Reach/dynamics.cc
-  tasks/Fr3Reach/dynamics.h
-  tasks/Fr3OodSim2Real/fr3.cc
-  tasks/Fr3OodSim2Real/fr3.h
-  tasks/Fr3OodSim2Real/cost_fn.cc
-  tasks/Fr3OodSim2Real/cost_fn.h
-  tasks/Fr3OodSim2Real/dynamics.cc
-  tasks/Fr3OodSim2Real/dynamics.h
-  tasks/Fr3HGripper/fr3.cc
-  tasks/Fr3HGripper/fr3.h
-  tasks/Fr3HGripper/cost_fn.cc
-  tasks/Fr3HGripper/cost_fn.h
-  tasks/Fr3HGripper/dynamics.cc
-  tasks/Fr3HGripper/dynamics.h
-  tasks/Fr3HGripperCarry/fr3.cc
-  tasks/Fr3HGripperCarry/fr3.h
   tasks/Fr3HGripperDual/fr3.cc
   tasks/Fr3HGripperDual/fr3.h
-  tasks/Fr3HGripperPot/fr3.cc
-  tasks/Fr3HGripperPot/fr3.h
-  tasks/Fr3HGripperPick/fr3.cc
   tasks/Fr3HGripperPotDual/fr3.cc
   tasks/Fr3HGripperPotDual/fr3.h
   tasks/Fr3HGripperCoCarry/fr3.cc
   tasks/Fr3HGripperCoCarry/fr3.h
-  tasks/Fr3HGripperHandover/handover.cc
-  tasks/Fr3HGripperHandover/handover.h
-  tasks/Fr3HGripperPick/fr3.h
-  tasks/Fr3HGripperReach/fr3.cc
-  tasks/Fr3HGripperReach/fr3.h
-  tasks/Fr3Grasp/fr3.cc
-  tasks/Fr3Grasp/fr3.h
-  tasks/Fr3Pick/fr3.cc
-  tasks/Fr3Pick/fr3.h
-  tasks/Fr3MazeForce/fr3_maze_force.cc
-  tasks/Fr3MazeForce/fr3_maze_force.h
-  tasks/Fr3MazeForce/cost_fn.cc
-  tasks/Fr3MazeForce/cost_fn.h
-  tasks/Fr3Obstacle/fr3_obstacle.cc
-  tasks/Fr3Obstacle/fr3_obstacle.h
-  tasks/Fr3Obstacle/cost_fn.cc
-  tasks/Fr3Obstacle/cost_fn.h
-  tasks/Fr3ObstacleQ/fr3_obstacle.cc
-  tasks/Fr3ObstacleQ/fr3_obstacle.h
-  tasks/Fr3ObstacleQ/cost_fn.cc
-  tasks/Fr3ObstacleQ/cost_fn.h
 
   # MPPI
   planners/MPPI/planner.cc
@@ -395,39 +295,6 @@ target_link_libraries(
 target_include_directories(testspeed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Headless FR3 closed-loop evaluator (q-vs-torque / mode comparison logging).
-add_executable(fr3_eval fr3_eval.cc)
-target_link_libraries(
-  fr3_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(fr3_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-add_executable(fr3_reach_eval fr3_reach_eval.cc)
-target_link_libraries(
-  fr3_reach_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(fr3_reach_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Headless SETTLE evaluator (FR3_H_Gripper_Reach): per-target p2p/drift metrics.
-add_executable(pot_eval pot_eval.cc)
-target_link_libraries(
-  pot_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(pot_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Headless evaluator for FR3_H_Gripper_CoCarry (dual-arm cooperative carry).
-# PotDual 계열에는 러너가 없었다 (pot_eval 은 FR3_H_Gripper_Pot 전용).
 add_executable(cocarry_eval cocarry_eval.cc)
 target_link_libraries(
   cocarry_eval
@@ -439,80 +306,6 @@ target_link_libraries(
 target_include_directories(cocarry_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Headless evaluator for FR3_H_Gripper_Handover (Gate 0 static-grasp test + plan run).
-add_executable(handover_eval handover_eval.cc)
-target_link_libraries(
-  handover_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(handover_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-add_executable(hgripper_settle_eval hgripper_settle_eval.cc)
-target_link_libraries(
-  hgripper_settle_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(hgripper_settle_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Headless generic grasp evaluator (SUMO-style contact grasp: object pose + contact + gripper).
-add_executable(grasp_eval grasp_eval.cc)
-target_link_libraries(
-  grasp_eval
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(grasp_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# Deterministic, deployment-consistent (decimated-planning async) FR3 reach sweep,
-# mirroring g1sweep/go2sweep. Standalone; does not modify shared FR3 sources.
-add_executable(fr3sweep fr3sweep.cc)
-target_link_libraries(
-  fr3sweep
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-)
-target_include_directories(fr3sweep PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# fr3record: fr3sweep + live offscreen video capture (adds glfw for the GL context).
-add_executable(fr3record fr3record.cc)
-target_link_libraries(
-  fr3record
-  libmjpc
-  mujoco::mujoco
-  threadpool
-  Threads::Threads
-  glfw
-)
-target_include_directories(fr3record PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-# FM policy smoke + closed-loop tests (only when ONNX Runtime is available).
-if(MJPC_HAS_ONNXRUNTIME)
-  add_executable(fm_policy_test policies/fm_policy_test.cc)
-  target_link_libraries(fm_policy_test libmjpc Threads::Threads)
-  target_include_directories(fm_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-  add_executable(fm_x0_diversity_test policies/fm_x0_diversity_test.cc)
-  target_link_libraries(fm_x0_diversity_test libmjpc Threads::Threads)
-  target_include_directories(fm_x0_diversity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-  add_executable(fm_closed_loop_test policies/fm_closed_loop_test.cc)
-  target_link_libraries(fm_closed_loop_test libmjpc mujoco::mujoco glfw Threads::Threads)
-  target_include_directories(fm_closed_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-endif()
-
-# Hybrid Impedance wipe test — verifies whether mujoco contact model can
-# sustain table contact with a hand-tuned operational-space controller
-# (no MPC, no FM). Useful for separating "solref/solimp problem" from
-# "MPPI sampling problem" in the contact-sustain analysis.
 add_executable(impedance_wipe_test policies/impedance_wipe_test.cc)
 target_link_libraries(impedance_wipe_test libmjpc mujoco::mujoco glfw Threads::Threads)
 target_include_directories(impedance_wipe_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -522,14 +315,6 @@ target_link_libraries(spline_copy_test libmjpc)
 target_include_directories(spline_copy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Headless G1 walking-config tester (closed-loop MPPI, no viewer, CSV out).
-add_executable(g1_walk_test tasks/g1/headless_walk_test.cc)
-target_link_libraries(g1_walk_test libmjpc mujoco::mujoco Threads::Threads)
-target_include_directories(g1_walk_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
-add_executable(rlmppi_sweep tasks/g1/rlmppi_sweep.cc)
-target_link_libraries(rlmppi_sweep libmjpc mujoco::mujoco Threads::Threads)
-target_include_directories(rlmppi_sweep PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
-
 target_compile_options(testspeed PUBLIC ${MJPC_COMPILE_OPTIONS})
 target_link_options(testspeed PRIVATE ${MJPC_LINK_OPTIONS})
 target_compile_definitions(testspeed PRIVATE MJSIMULATE_STATIC)
