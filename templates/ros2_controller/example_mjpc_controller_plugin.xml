@@ -1,0 +1,11 @@
+<library path="example_mjpc_controller">
+  <class name="example_mjpc_controller/ExampleMjpcController"
+         type="example_mjpc_controller::ExampleMjpcController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Owns /mjpc_bridge shared memory; publishes joint state to mjpc and applies
+      mjpc's feedforward torque, with LPF, rate limit, torque ceiling and a 100 ms
+      staleness timeout that falls back to gravity compensation.
+    </description>
+  </class>
+</library>

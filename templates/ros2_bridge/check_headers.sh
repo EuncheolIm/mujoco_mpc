@@ -23,6 +23,13 @@ else
 fi
 REF=$(find "$ROOT" -path '*/franka_ec/include/franka_ec/mjpc_bridge.h' -not -path '*/build/*' 2>/dev/null | head -1)
 [ -z "$REF" ] && [ -f "$ROOT/include/franka_ec/mjpc_bridge.h" ] && REF="$ROOT/include/franka_ec/mjpc_bridge.h"
+# Fall back to the copy shipped beside this script. On a clone WITHOUT franka_ec that
+# is the only authority available, and it is a byte copy of it.
+[ -z "$REF" ] && [ -f "$(dirname "$0")/mjpc_bridge.h" ] && {
+  REF="$(cd "$(dirname "$0")" && pwd)/mjpc_bridge.h"
+  ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+  echo "franka_ec not in this workspace; using the template copy as the reference." >&2
+}
 
 if [ -z "$REF" ]; then
   echo "reference franka_ec/include/franka_ec/mjpc_bridge.h not found under $ROOT" >&2

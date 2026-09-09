@@ -1,0 +1,13 @@
+# Merge this entry into the controller_manager config your robot bringup already uses
+# (for franka_ros2 that is franka_bringup/config/controllers.yaml). The KEY is the
+# controller instance name you spawn; `type` is the class exported by the plugin xml.
+controller_manager:
+  ros__parameters:
+    update_rate: 1000            # Hz. The staleness timeout is 100 CYCLES, so this
+                                 # rate sets the real timeout: 1000 Hz -> 100 ms.
+    example_mjpc_controller:
+      type: example_mjpc_controller/ExampleMjpcController
+
+example_mjpc_controller:
+  ros__parameters:
+    arm_id: fr3                  # joint names are built as <arm_id>_joint1..7

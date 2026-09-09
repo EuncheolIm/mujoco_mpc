@@ -413,7 +413,35 @@ MJPC_PLANNER_THREADS=6 nice -n 5 ./build/bin/mjpc --task FR3_H_Gripper_Pick
 
 ---
 
-## 11. Deliberate non-goals
+## 11. Templates
+
+`templates/` holds both halves, neither of them wired into a build, so a clone can go
+from nothing to a moving arm without reverse-engineering this document.
+
+| | what it is |
+|---|---|
+| `templates/ros2_bridge/` | the mjpc half: canonical header, a task with just the four blocks, a minimal task.xml, `check_headers.sh`, and `bridge_probe.cc` — a standalone `/mjpc_bridge` tester needing only g++ and librt |
+| `templates/ros2_controller/` | the ROS half: a complete ament package that owns the region and speaks the protocol. `franka_ec` is not in this repository, so without this a clone has a planner and no way to reach a robot. |
+
+Order that isolates faults instead of stacking them:
+
+1. `check_headers.sh` — every copy OK. On a clone without `franka_ec` it falls back to
+   the template's own copy as the reference.
+2. build and spawn `templates/ros2_controller`
+3. `bridge_probe watch` — `state_seq` rises, so the controller publishes
+4. `bridge_probe zero` — no `action timeout`, so the action path works end to end
+5. only now is a missing motion your task's fault
+
+The controller template is `MPPITrackController` minus the vendor-specific parts:
+franka's `robot_state`/`robot_model` interfaces are dropped because their only purpose
+was FK, and **nothing writes `MjpcBridge::ee_pos` and no task reads it** (checked, not
+assumed). The protocol, the filter, the rate limit, the ceiling, the timeout and the
+ownership rule are identical. It is syntax-checked against Humble headers and has never
+been run on hardware.
+
+---
+
+## 12. Deliberate non-goals
 
 - **No ROS in mjpc, no mjpc in franka_ec.** Adding a field to `MjpcBridge` breaks
   every copy and every binary at once, so new signals go in a *new* region (that is
