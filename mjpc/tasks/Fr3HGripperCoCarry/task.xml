@@ -91,7 +91,7 @@
     <numeric name="pd_rot_alpha" data="2.0"/>      <!-- 남은 각도 비례 감속 1/s -->
     <numeric name="pd_done_ang" data="0.10"/>      <!-- 완료 판정 각오차 rad -->
     <!-- 레퍼런스 트림(적분). 0 = 끔. 경로 진행이 끝난 뒤에만 적분하고 ±trim_max 로 클램프. -->
-    <numeric name="pd_trim_ki" data="0"/>
+    <numeric name="pd_trim_ki" data="0.5"/>
     <numeric name="pd_w_impact" data="0"/>
     <numeric name="pd_place_thr" data="0"/>     <!-- 이 거리 앞에서 레퍼런스 정지, 이후 MPPI -->
     <numeric name="pd_w_place" data="0"/>
@@ -104,7 +104,7 @@
     <numeric name="pd_trim_v" data="0.05"/>
     <numeric name="pd_w_pos_place" data="1"/>   <!-- 정지 구간의 손 위치항 배수 -->
     <numeric name="pd_place_lift" data="0"/>
-    <numeric name="pd_trim_max" data="0.05"/>
+    <numeric name="pd_trim_max" data="0.25"/>
     <numeric name="pd_done_tol" data="0.010"/>
     <numeric name="pd_done_dwell" data="0.3"/>
     <numeric name="pd_w_pos_carry" data="5"/>      <!-- phase 3에서 L_pos/R_pos x배 (냄비 1.0 kg 미보상 부하) -->
