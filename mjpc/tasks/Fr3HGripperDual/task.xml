@@ -2,7 +2,18 @@
   <size memory="100M" nuserdata="5"/>
 
   <custom>
-    <numeric name="agent_planner" data="14"/>           <!-- FlowMPPIRpy, FM OFF -> vanilla MPPI over nu=16 -->
+    <!-- planner 9 = FlowMPPI, NOT 14 (FlowMPPIRpy). The per-arm softmax this task
+         depends on (perarm_groups / perarm_ctrl / perarm_term / perarm_res_off below)
+         is implemented ONLY in planners/FlowMPPI; planner 14 ignores those numerics
+         and falls back to one shared softmax, which is the case the comment on the
+         sensor block calls out -- a good sample for one arm and a bad one for the
+         other get the same weight, so each arm becomes noise for the other.
+         FM itself stays OFF: fm_config.yaml leaves fm_checkpoint empty and sets
+         fm_track_scale = fm_frac = 0, so this is vanilla MPPI over nu=16 with the
+         per-joint / DC-noise / lambda knobs. MJPC_FM_CONFIG must still point at THIS
+         task's fm_config.yaml, or the loader falls back to the single-arm 7-joint
+         prior in Fr3/fm_config.yaml. -->
+    <numeric name="agent_planner" data="9"/>
     <numeric name="agent_horizon" data="0.4"/>            <!-- headless-tuned: longer H -> smooth stop -->
     <numeric name="agent_timestep" data="0.03"/>   <!-- replan cost T_c must stay well below dt_mppi. nu=16: T_c 12.33ms at K=128/16thr -> ratio 0.41. -->
     <numeric name="agent_policy_width" data="0.0035"/>

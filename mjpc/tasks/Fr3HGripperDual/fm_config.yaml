@@ -1,9 +1,18 @@
 # ==========================================================================
-# Fr3HGripperDual — FlowMPPIRpy (planner 14) with the FM prior OFF.
+# Fr3HGripperDual — FlowMPPI (planner 9) with the FM prior OFF.
 # The FM guide is single-arm (7 joints); this task is dual-arm (nu=16), so we
-# run planner 14 as VANILLA MPPI: empty fm_checkpoint -> guide not loaded, and
+# run planner 9 as VANILLA MPPI: empty fm_checkpoint -> guide not loaded, and
 # alpha (fm_track_scale)=0, fm_frac=0 -> zero FM influence even if it were.
 # Keeps the nice per-joint / DC-noise / lambda tuning knobs.
+#
+# Planner 9, not 14: the per-arm softmax this task needs (perarm_* numerics in
+# task.xml) exists only in planners/FlowMPPI. See task.xml's agent_planner note.
+#
+# NOTE these override the task.xml sampling numerics -- they disagree on purpose
+# or by accident, check before tuning:
+#   here            task.xml
+#   trajectories 64  sampling_trajectories 128
+#   knots        20  sampling_spline_points 16
 # ==========================================================================
 
 tasks_dir: mjpc/tasks

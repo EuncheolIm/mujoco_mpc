@@ -42,6 +42,11 @@
     </default>
   </default>
   <asset>
+    <!-- The 59 gripper mesh assets the primitive-collision variant no longer
+         references were DELETED, not just orphaned: mj_collision cost scales
+         with nmeshface even for meshes no geom points at, and they carried 37%
+         of this model's faces. See H_GRIPPER_MODEL_GUIDE.md section 3:
+         deleting a body is not enough, its mesh entries must go too. -->
     <material name="black" rgba=".2 .2 .2 1" />
     <material name="white" rgba="1 1 1 1" />
     <material name="red" rgba="1 0.072272 0.039546 1" />
@@ -79,65 +84,6 @@
     <mesh file="link7_2.obj" />
     <mesh file="link7_3.obj" />
     <mesh name="base_link" file="gripper/base_link.STL" />
-    <mesh name="base_finger_A_link" file="gripper/base_finger_A_link.STL" />
-    <mesh name="finger_A_slide_link" file="gripper/finger_A_slide_link.STL" />
-    <mesh name="finger_A_fixed_slide_link" file="gripper/finger_A_fixed_slide_link.STL" />
-    <mesh name="finger_A_sub_link_1" file="gripper/finger_A_sub_link_1.STL" />
-    <mesh name="finger_A_sub_link_2" file="gripper/finger_A_sub_link_2.STL" />
-    <mesh name="finger_A_sub_bolt_link_1" file="gripper/finger_A_sub_bolt_link_1.STL" />
-    <mesh name="finger_A_sub_link_3" file="gripper/finger_A_sub_link_3.STL" />
-    <mesh name="finger_A_sub_bolt_link_2" file="gripper/finger_A_sub_bolt_link_2.STL" />
-    <mesh name="finger_A_sub_link_4" file="gripper/finger_A_sub_link_4.STL" />
-    <mesh name="finger_A_sub_bolt_link_3" file="gripper/finger_A_sub_bolt_link_3.STL" />
-    <mesh name="finger_A_sub_link_5" file="gripper/finger_A_sub_link_5.STL" />
-    <mesh name="finger_A_sub_link_6" file="gripper/finger_A_sub_link_6.STL" />
-    <mesh name="finger_A_sub_link_7" file="gripper/finger_A_sub_link_7.STL" />
-    <mesh name="finger_A_sub_bolt_link_4" file="gripper/finger_A_sub_bolt_link_4.STL" />
-    <mesh name="finger_A_sub_link_8" file="gripper/finger_A_sub_link_8.STL" />
-    <mesh name="finger_A_sub_link_9" file="gripper/finger_A_sub_link_9.STL" />
-    <mesh name="finger_A_sub_link_10" file="gripper/finger_A_sub_link_10.STL" />
-    <mesh name="finger_A_sub_link_11" file="gripper/finger_A_sub_link_11.STL" />
-    <mesh name="finger_A_sub_link_12" file="gripper/finger_A_sub_link_12.STL" />
-    <mesh name="finger_B_rot_link" file="gripper/finger_B_rot_link.STL" />
-    <mesh name="finger_B_link" file="gripper/finger_B_link.STL" />
-    <mesh name="finger_B_slide_link" file="gripper/finger_B_slide_link.STL" />
-    <mesh name="finger_B_fixed_slide_link" file="gripper/finger_B_fixed_slide_link.STL" />
-    <mesh name="finger_B_sub_link_1" file="gripper/finger_B_sub_link_1.STL" />
-    <mesh name="finger_B_sub_link_2" file="gripper/finger_B_sub_link_2.STL" />
-    <mesh name="finger_B_sub_bolt_link_1" file="gripper/finger_B_sub_bolt_link_1.STL" />
-    <mesh name="finger_B_sub_link_3" file="gripper/finger_B_sub_link_3.STL" />
-    <mesh name="finger_B_sub_bolt_link_2" file="gripper/finger_B_sub_bolt_link_2.STL" />
-    <mesh name="finger_B_sub_link_4" file="gripper/finger_B_sub_link_4.STL" />
-    <mesh name="finger_B_sub_bolt_link_3" file="gripper/finger_B_sub_bolt_link_3.STL" />
-    <mesh name="finger_B_sub_link_5" file="gripper/finger_B_sub_link_5.STL" />
-    <mesh name="finger_B_sub_link_6" file="gripper/finger_B_sub_link_6.STL" />
-    <mesh name="finger_B_sub_link_7" file="gripper/finger_B_sub_link_7.STL" />
-    <mesh name="finger_B_sub_bolt_link_4" file="gripper/finger_B_sub_bolt_link_4.STL" />
-    <mesh name="finger_B_sub_link_8" file="gripper/finger_B_sub_link_8.STL" />
-    <mesh name="finger_B_sub_link_9" file="gripper/finger_B_sub_link_9.STL" />
-    <mesh name="finger_B_sub_link_10" file="gripper/finger_B_sub_link_10.STL" />
-    <mesh name="finger_B_sub_link_11" file="gripper/finger_B_sub_link_11.STL" />
-    <mesh name="finger_B_sub_link_12" file="gripper/finger_B_sub_link_12.STL" />
-    <mesh name="finger_C_rot_link" file="gripper/finger_C_rot_link.STL" />
-    <mesh name="finger_C_link" file="gripper/finger_C_link.STL" />
-    <mesh name="finger_C_slide_link" file="gripper/finger_C_slide_link.STL" />
-    <mesh name="finger_C_fixed_slide_link" file="gripper/finger_C_fixed_slide_link.STL" />
-    <mesh name="finger_C_sub_link_1" file="gripper/finger_C_sub_link_1.STL" />
-    <mesh name="finger_C_sub_link_2" file="gripper/finger_C_sub_link_2.STL" />
-    <mesh name="finger_C_sub_bolt_link_1" file="gripper/finger_C_sub_bolt_link_1.STL" />
-    <mesh name="finger_C_sub_link_3" file="gripper/finger_C_sub_link_3.STL" />
-    <mesh name="finger_C_sub_bolt_link_2" file="gripper/finger_C_sub_bolt_link_2.STL" />
-    <mesh name="finger_C_sub_link_4" file="gripper/finger_C_sub_link_4.STL" />
-    <mesh name="finger_C_sub_bolt_link_3" file="gripper/finger_C_sub_bolt_link_3.STL" />
-    <mesh name="finger_C_sub_link_5" file="gripper/finger_C_sub_link_5.STL" />
-    <mesh name="finger_C_sub_link_6" file="gripper/finger_C_sub_link_6.STL" />
-    <mesh name="finger_C_sub_link_7" file="gripper/finger_C_sub_link_7.STL" />
-    <mesh name="finger_C_sub_bolt_link_4" file="gripper/finger_C_sub_bolt_link_4.STL" />
-    <mesh name="finger_C_sub_link_8" file="gripper/finger_C_sub_link_8.STL" />
-    <mesh name="finger_C_sub_link_9" file="gripper/finger_C_sub_link_9.STL" />
-    <mesh name="finger_C_sub_link_10" file="gripper/finger_C_sub_link_10.STL" />
-    <mesh name="finger_C_sub_link_11" file="gripper/finger_C_sub_link_11.STL" />
-    <mesh name="finger_C_sub_link_12" file="gripper/finger_C_sub_link_12.STL" />
   </asset>
   <worldbody>
     <body name="l_base" pos="0 0.3 0" gravcomp="1">
@@ -202,12 +148,15 @@
                     <geom mesh="link7_2" material="white" class="visual_fr3" />
                     <geom mesh="link7_3" material="black" class="visual_fr3" />
                     <geom name="l_link7_R_col" type="cylinder" size="0.045 0.08" pos="0 0 0.005" class="collision" />
-                    <site name="l_hand_site" pos="0 0 0.365" group="0" />
-                    <site name="l_frame_x" type="cylinder" pos="0.04 0 0.34" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
-                    <site name="l_frame_y" type="cylinder" pos="0 0.04 0.34" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
-                    <site name="l_frame_z" type="cylinder" pos="0 0 0.38" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
-                    <body name="l_hand" childclass="H_gripper" pos="0 0 0.220" gravcomp="0">
-                      <site name="l_gripper_site" type="sphere" pos="0 0 0.145" size="0.005" rgba="1 0 0 1" group="0" />
+                    <!-- TCP: measured against the robot O_T_EE at q=home. x/y/orientation matched
+         to 4 decimals, z was 57.0 mm out, so hand_site and the frame markers
+         moved 0.365 -> 0.308. gripper_site stays at the jaw plane on purpose. -->
+                    <site name="l_hand_site" pos="0 0 0.308" group="0" />
+                    <site name="l_frame_x" type="cylinder" pos="0.04 0 0.283" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
+                    <site name="l_frame_y" type="cylinder" pos="0 0.04 0.283" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
+                    <site name="l_frame_z" type="cylinder" pos="0 0 0.323" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
+                    <body name="l_hand" childclass="H_gripper" pos="0 0 0.165" gravcomp="1" euler="0 0 -1.5708">
+                      <site name="l_gripper_site" type="sphere" pos="0 0 0.143" size="0.005" rgba="1 0 0 1" group="0" />
                       <inertial pos="0.00343395 0.00159719 -0.0359415" quat="-0.0187647 0.714578 0.0193531 0.699036" mass="0.565346" diaginertia="0.000313332 0.000193161 0.000168441" />
                       <!-- VISUAL group 1 / contype 0 : original mesh, render unchanged -->
                       <geom class="visual" mesh="base_link" rgba="0.752941 0.752941 0.752941 1" />
@@ -218,14 +167,14 @@
                       <geom name="l_gpu_knuckle_A" type="box" size="0.055 0.018 0.030" pos="0.060 0 0.000" group="3" mass="0" contype="1" conaffinity="1" rgba="0 0.5 1 0.3" />
                       <geom name="l_gpu_knuckle_B" type="box" size="0.050 0.016 0.028" pos="-0.062 0.033 0.006" group="3" mass="0" contype="1" conaffinity="1" rgba="0 0.5 1 0.3" />
                       <geom name="l_gpu_knuckle_C" type="box" size="0.050 0.016 0.028" pos="-0.062 -0.033 0.006" group="3" mass="0" contype="1" conaffinity="1" rgba="0 0.5 1 0.3" />
-                      <body name="l_finger_A" pos="0 0 0" gravcomp="0">
+                      <body name="l_finger_A" pos="0 0 0" gravcomp="1">
                         <inertial pos="0.045 0 0.10" mass="0.12" diaginertia="1e-4 1e-4 2e-5" />
                         <joint name="l_finger_A_slide_joint" type="slide" axis="-1 0 0" range="0 0.05" damping="10" armature="0.01" />
                         <geom name="l_gripper_pad_1" class="fingertip_pad_collision_2" pos="0.0541 0 0.143" group="3" />
                         <geom name="l_gpu_fA_sph_0" type="sphere" size="0.0261" pos="0.0772 -0.0002 0.0493" group="3" mass="0" contype="1" conaffinity="1" rgba="1 0.5 0 0.3" />
                         <geom name="l_gpu_fA_sph_1" type="sphere" size="0.0193" pos="0.0704 0.0005 0.0818" group="3" mass="0" contype="1" conaffinity="1" rgba="1 0.5 0 0.3" />
                       </body>
-                      <body name="l_finger_BC" pos="0 0 0" gravcomp="0">
+                      <body name="l_finger_BC" pos="0 0 0" gravcomp="1">
                         <inertial pos="-0.045 0 0.10" mass="0.24" diaginertia="2e-4 2e-4 4e-5" />
                         <joint name="l_finger_BC_slide_joint" type="slide" axis="1 0 0" range="0 0.05" damping="10" armature="0.01" />
                         <geom name="l_gripper_pad_2" class="fingertip_pad_collision_1" pos="-0.0541 0.0321 0.143" group="3" />
@@ -306,12 +255,12 @@
                     <geom mesh="link7_2" material="white" class="visual_fr3" />
                     <geom mesh="link7_3" material="black" class="visual_fr3" />
                     <geom name="r_link7_R_col" type="cylinder" size="0.045 0.08" pos="0 0 0.005" class="collision" />
-                    <site name="r_hand_site" pos="0 0 0.365" group="0" />
-                    <site name="r_frame_x" type="cylinder" pos="0.04 0 0.34" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
-                    <site name="r_frame_y" type="cylinder" pos="0 0.04 0.34" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
-                    <site name="r_frame_z" type="cylinder" pos="0 0 0.38" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
-                    <body name="r_hand" childclass="H_gripper" pos="0 0 0.220" gravcomp="0">
-                      <site name="r_gripper_site" type="sphere" pos="0 0 0.145" size="0.005" rgba="1 0 0 1" group="0" />
+                    <site name="r_hand_site" pos="0 0 0.308" group="0" />
+                    <site name="r_frame_x" type="cylinder" pos="0.04 0 0.283" euler="0 1.5708 0" size="0.003 0.04" rgba="1 0 0 0.8" group="1" />
+                    <site name="r_frame_y" type="cylinder" pos="0 0.04 0.283" euler="1.5708 0 0" size="0.003 0.04" rgba="0 1 0 0.8" group="1" />
+                    <site name="r_frame_z" type="cylinder" pos="0 0 0.323" euler="0 0 0" size="0.003 0.04" rgba="0 0 1 0.8" group="1" />
+                    <body name="r_hand" childclass="H_gripper" pos="0 0 0.165" gravcomp="1" euler="0 0 -1.5708">
+                      <site name="r_gripper_site" type="sphere" pos="0 0 0.143" size="0.005" rgba="1 0 0 1" group="0" />
                       <inertial pos="0.00343395 0.00159719 -0.0359415" quat="-0.0187647 0.714578 0.0193531 0.699036" mass="0.565346" diaginertia="0.000313332 0.000193161 0.000168441" />
                       <!-- VISUAL group 1 / contype 0 : original mesh, render unchanged -->
                       <geom class="visual" mesh="base_link" rgba="0.752941 0.752941 0.752941 1" />
@@ -322,14 +271,14 @@
                       <geom name="r_gpu_knuckle_A" type="box" size="0.055 0.018 0.030" pos="0.060 0 0.000" group="3" mass="0" contype="1" conaffinity="1" rgba="0 0.5 1 0.3" />
                       <geom name="r_gpu_knuckle_B" type="box" size="0.050 0.016 0.028" pos="-0.062 0.033 0.006" group="3" mass="0" contype="1" conaffinity="1" rgba="0 0.5 1 0.3" />
                       <geom name="r_gpu_knuckle_C" type="box" size="0.050 0.016 0.028" pos="-0.062 -0.033 0.006" group="3" mass="0" contype="1" conaffinity="1" rgba="0 0.5 1 0.3" />
-                      <body name="r_finger_A" pos="0 0 0" gravcomp="0">
+                      <body name="r_finger_A" pos="0 0 0" gravcomp="1">
                         <inertial pos="0.045 0 0.10" mass="0.12" diaginertia="1e-4 1e-4 2e-5" />
                         <joint name="r_finger_A_slide_joint" type="slide" axis="-1 0 0" range="0 0.05" damping="10" armature="0.01" />
                         <geom name="r_gripper_pad_1" class="fingertip_pad_collision_2" pos="0.0541 0 0.143" group="3" />
                         <geom name="r_gpu_fA_sph_0" type="sphere" size="0.0261" pos="0.0772 -0.0002 0.0493" group="3" mass="0" contype="1" conaffinity="1" rgba="1 0.5 0 0.3" />
                         <geom name="r_gpu_fA_sph_1" type="sphere" size="0.0193" pos="0.0704 0.0005 0.0818" group="3" mass="0" contype="1" conaffinity="1" rgba="1 0.5 0 0.3" />
                       </body>
-                      <body name="r_finger_BC" pos="0 0 0" gravcomp="0">
+                      <body name="r_finger_BC" pos="0 0 0" gravcomp="1">
                         <inertial pos="-0.045 0 0.10" mass="0.24" diaginertia="2e-4 2e-4 4e-5" />
                         <joint name="r_finger_BC_slide_joint" type="slide" axis="1 0 0" range="0 0.05" damping="10" armature="0.01" />
                         <geom name="r_gripper_pad_2" class="fingertip_pad_collision_1" pos="-0.0541 0.0321 0.143" group="3" />
