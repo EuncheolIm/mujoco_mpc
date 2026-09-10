@@ -1,0 +1,63 @@
+<library path="franka_ec">
+    <class name="franka_ec/GravityCompensationExampleController"
+           type="franka_ec::GravityCompensationExampleController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            The gravity compensation controller only sends zero torques so that the robot does gravity compensation
+        </description>
+    </class>
+    
+    <class name="franka_ec/ExampleController"
+           type="franka_ec::ExampleController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            The example controller code in One arm (Joint control, CLIK)
+        </description>
+    </class>
+
+    <class name="franka_ec/RightController"
+           type="franka_ec::RightController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            The Right arm example controller code in One arm (Joint control, CLIK)
+        </description>
+    </class>
+
+    <class name="franka_ec/MPPIController"
+           type="franka_ec::MPPIController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            The MPPI controller using zmq data from MPPI PC's data
+        </description>
+    </class>
+
+    <class name="franka_ec/MultiJointController"
+           type="franka_ec::MultiJointController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Multi joint controler test
+        </description>
+    </class>
+
+    <class name="franka_ec/MultiJointMPPIController"
+           type="franka_ec::MultiJointMPPIController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Multi joint MPPI controler test
+        </description>
+    </class>
+
+    <class name="franka_ec/SimMPPIController"
+           type="franka_ec::SimMPPIController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Sim based mppi
+        </description>
+    </class>
+
+    <class name="franka_ec/MjpcDualBridgeController"
+           type="franka_ec::MjpcDualBridgeController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Dual-arm torque bridge to mujoco-mpc (FR3_H_Gripper_Dual). Owns the
+            /mjpc_bridge_dual shared-memory region: publishes 14 measured joint
+            positions/velocities and commands the planner's feedforward torque,
+            filtered, slew-limited and ceilinged, falling back to gravity
+            compensation on both arms.
+        </description>
+    </class>
+
+</library>
+

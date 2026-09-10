@@ -1,0 +1,273 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 1000  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    franka_left_robot_state_broadcaster:
+      type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+    franka_right_robot_state_broadcaster:
+      type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+    franka_left_robot_model_broadcaster:
+      type: franka_robot_state_broadcaster/FrankaRobotModelBroadcaster
+    franka_right_robot_model_broadcaster:
+      type: franka_robot_state_broadcaster/FrankaRobotModelBroadcaster
+    dual_joint_impedance_example_controller:
+      # type: franka_example_controllers/MultiJointImpedanceExampleController
+      type: franka_ec/MultiJointController
+      # type: franka_ec/MultiJointMPPIController
+    dual_joint_velocity_example_controller:
+      type: franka_example_controllers/DualJointVelocityExampleController
+    dual_arm_qp_controller:
+      type: franka_ys/MultiJointController
+    mppi_zmq_controller:
+      type: franka_ys/MPPIZmqController
+    dual_mppi_controller:
+      type: franka_ec/MultiJointMPPIController
+    sim_mppi_controller:
+      type: franka_ec/SimMPPIController
+    mjpc_dual_bridge_controller:
+      type: franka_ec/MjpcDualBridgeController
+    
+franka_left_robot_state_broadcaster:
+  ros__parameters:
+    arm_id: left
+    frequency: 30
+
+franka_right_robot_state_broadcaster:
+  ros__parameters:
+    arm_id: right
+    frequency: 30
+
+franka_left_robot_model_broadcaster:
+  ros__parameters:
+    arm_id: left
+    frequency: 30
+
+franka_right_robot_model_broadcaster:
+  ros__parameters:
+    arm_id: right
+    frequency: 30
+    
+dual_joint_impedance_example_controller:
+  ros__parameters:
+    arm_count: 2
+    arm_1:
+      arm_id: left
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+    arm_2:
+      arm_id: right
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+    
+dual_joint_velocity_example_controller:
+  ros__parameters:
+    arm_1:
+      arm_id: left
+    arm_2:
+      arm_id: right
+
+dual_arm_qp_controller:
+  ros__parameters:
+    arm_count: 2
+    arm_1:
+      arm_id: left
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+    arm_2:
+      arm_id: right
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+
+mppi_zmq_controller:
+  ros__parameters:
+    arm_count: 2
+    gpu_pc_ip: "192.168.1.11"  # MPPI를 연산하는 GPU PC의 IP
+    arm_1:
+      arm_id: left
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+    arm_2:
+      arm_id: right
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+
+
+dual_mppi_controller:
+  ros__parameters:
+    arm_count: 2
+    arm_1:
+      arm_id: left
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+    arm_2:
+      arm_id: right
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+
+sim_mppi_controller:
+  ros__parameters:
+    arm_count: 2
+    arm_1:
+      arm_id: left
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+    arm_2:
+      arm_id: right
+      k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 250.0
+        - 150.0
+        - 50.0
+      d_gains:
+        - 30.0
+        - 30.0
+        - 30.0
+        - 30.0
+        - 10.0
+        - 10.0
+        - 5.
+
+# Dual-arm torque bridge to mujoco-mpc's FR3_H_Gripper_Dual task.
+# Owns the /mjpc_bridge_dual shared-memory region; mjpc attaches to it.
+# No k_gains/d_gains on purpose: this controller passes the planner's feedforward
+# torque through (filter + slew limit + ceiling), it does not close a PD loop.
+# arm_1 -> bridge indices 0-6, arm_2 -> 7-13. That order is part of the protocol and
+# must match the l_/r_ prefixes in the mjpc model.
+mjpc_dual_bridge_controller:
+  ros__parameters:
+    arm_count: 2
+    arm_1:
+      arm_id: left
+    arm_2:
+      arm_id: right
