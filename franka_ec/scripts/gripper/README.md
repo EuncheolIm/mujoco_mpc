@@ -19,23 +19,96 @@ Move them together. The layout must stay identical to judo's copy **and** to mjp
 
 ## Run
 
+One terminal per block. **The namespace has to be the same in all three** — the
+launch file name picks it, and everything after must use the matching `/ag_*`.
+
 ```bash
-# 1. driver
+# ── terminal 1: gripper server ───────────────────────────────────────────
 source /opt/ros/humble/setup.bash
 source ~/gripper_ws/install/setup.bash
-ros2 launch art_gripper gripper_ecat_right.launch.py
 
-# 2. motor on. 'on' is a Python keyword, so the quotes are required -- without them
-#    you get "Failed to populate field: getattr(): attribute name must be string".
-ros2 service call /ag_right/motor_on art_gripper_interfaces/srv/MotorOn "{'on': 1}"
+ros2 launch art_gripper gripper_ecat_right.launch.py    # -> /ag_right/*
+# ros2 launch art_gripper gripper_ecat_left.launch.py   # -> /ag_left/*
+# ros2 launch art_gripper gripper_ecat_dual.launch.py   # -> both
 
-# 3. this bridge (owns /judo_gripper, so start it BEFORE the planner)
+# check which one actually came up before going on:
+ros2 service list | grep ag_
+```
+
+```bash
+# ── terminal 2: motor ON, then verify by hand ───────────────────────────
+source /opt/ros/humble/setup.bash
+source ~/gripper_ws/install/setup.bash
+
+# MUST be first. Without it the width commands are accepted (result=0) and nothing
+# moves. Note the quotes: `on` is a Python keyword, and "{on: 1}" fails with
+# "Failed to populate field: getattr(): attribute name must be string".
+ros2 service call /ag_right/motor_on \
+  art_gripper_interfaces/srv/MotorOn "{'on': 1}"
+
+# open / close by hand, to confirm the hardware before any planner is involved.
+# 0 = closed, 100 = open -- the OPPOSITE of mjpc's slide. See "Sign and travel".
+ros2 service call /ag_right/set_target_finger_width \
+  art_gripper_interfaces/srv/SetTargetFingerWidth "{finger_width: 95}"
+ros2 service call /ag_right/set_target_finger_width \
+  art_gripper_interfaces/srv/SetTargetFingerWidth "{finger_width: 32}"
+
+# with a speed, and the grip force
+ros2 service call /ag_right/set_target_finger_width_with_speed \
+  art_gripper_interfaces/srv/SetTargetFingerWidthWithSpeed \
+  "{finger_width: 90, finger_width_speed: 30}"
+ros2 service call /ag_right/set_gripping_force \
+  art_gripper_interfaces/srv/SetGrippingForce "{force: 20}"
+
+# measured width + status word
+ros2 topic echo /ag_right/gripper_status
+
+# motor off when finished
+ros2 service call /ag_right/motor_on \
+  art_gripper_interfaces/srv/MotorOn "{'on': 0}"
+```
+
+```bash
+# ── terminal 3: this bridge ─────────────────────────────────────────────
+# SYSTEM python3 -- it needs rclpy, which the judo venv does not have.
+source /opt/ros/humble/setup.bash
+source ~/gripper_ws/install/setup.bash
+
+cd <repo root>
 python3 franka_ec/scripts/gripper/gripper_bridge_node.py --ns /ag_right
 ```
 
+It owns `/judo_gripper` (creates it, unlinks it on exit), so **start it before the
+planner**. On startup it issues `motor_on(1)`, `set_target_finger_pose(180)` and
+`set_gripping_force` once.
+
+```bash
+# ── terminal 4: the planner, with the gripper enabled ───────────────────
+MJPC_GRIPPER_SHM=1 MJPC_GRIP_OPEN_MM=95 MJPC_GRIP_CLOSE_MM=32 MJPC_GRIP_FORCE_N=20 \
+  ./build/bin/mjpc --task <task>
+```
+
+`MJPC_GRIPPER_SHM=1` makes the planner command the fingers.
+`MJPC_GRIPPER_MIRROR=1` is read-only — the measured width drives the sim fingers and
+the real ones are never commanded, which is the safe way to check the mapping first.
+Only a task that carries the gripper-shm block reacts to these (see "Not included").
+
+### Order, and what goes wrong out of order
+
+| | why |
+|---|---|
+| 1. server | nothing else can resolve `/ag_*` |
+| 2. `motor_on` | width commands return `result=0` and do nothing without it |
+| 3. bridge | it is the OWNER of `/judo_gripper`; the planner only attaches |
+| 4. planner | attaches; if the region is missing it degrades to sim-only |
+
 `--ns` defaults to `/ag_left`. If the driver came up as `right`, only `/ag_right/*`
-exists and every call logs "service not ready" — check with
-`ros2 service list | grep ag_`.
+exists and every call logs "service not ready" — the warning is rate-limited to one
+line per service per 2 s and names the namespace it tried.
+
+> The example in `CMD.md` launches `gripper_ecat_left.launch.py` and then calls
+> `/ag_right/motor_on`. That pair cannot work: the left launch publishes `/ag_left/*`
+> only. Pick one side and use it in all three terminals.
 
 Options: `--ns`, `--dry-run`, `--contact-sensitivity`, `--width-speed`.
 
@@ -69,9 +142,17 @@ Measured travel is only **~18 mm/s**, so 95 → 32 mm is 63 mm ≈ **3.5 s**. An
 sequence that assumes the fingers are shut sooner will move the arm while the object
 is still loose.
 
-## Not included
+## The mjpc side
 
-The mjpc-side C++ header `gripper_shm.h` is **not** on this branch — it lives in
-`mjpc/tasks/Fr3HGripperCarry/` on the single-arm branch. A dual task that wants to
-command the real grippers needs it (or its own copy), and the 40 B layout above is
-what it must match.
+`mjpc/tasks/Fr3HGripperDual/gripper_shm.h` is the C++ end of the same region, copied
+from `Fr3HGripperCarry/`. Layout cross-checked against the Python side: ten `int32_t`
+vs `FMT = "10i"` / `STRUCT_SIZE = 40`.
+
+A task only reaches the real fingers if it carries the gripper-shm block that reads
+`grab_motor`'s ctrl and writes a width — `Fr3HGripperCarry` and `Fr3HGripperPick` do;
+`Fr3HGripperDual` does **not** yet, so the header is present but nothing calls it.
+Until that block is added, `MJPC_GRIPPER_SHM=1` has no effect on the dual task and the
+real gripper only moves from the service calls in terminal 2.
+
+All three copies of the layout — this header, `gripper_shm.py`, and judo's original —
+map the same `/judo_gripper` and must stay identical.
