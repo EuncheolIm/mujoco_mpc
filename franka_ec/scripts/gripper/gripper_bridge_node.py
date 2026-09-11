@@ -52,6 +52,7 @@ from art_gripper_interfaces.srv import (  # noqa: E402
 )
 
 from gripper_shm import (  # noqa: E402
+    SHM_NAME,
     BIT_CONTACT,
     BIT_FAULT,
     BIT_READY,
@@ -67,30 +68,58 @@ def clamp_u8(v, lo, hi):
     return int(max(lo, min(hi, int(v))))
 
 
-class GripperBridge(Node):
-    def __init__(self, ns: str, dry_run: bool, contact_sensitivity=None,
-                 width_speed=None):
-        super().__init__("judo_gripper_bridge")
+class _PrefixLogger:
+    """Tags every line with the arm's namespace.
+
+    With two arms in ONE node the messages interleave, and almost every warning in
+    here is about a specific gripper -- an unprefixed "motor is OFF" would not say
+    which. Wrapping the logger means the existing call sites need no edit.
+    """
+
+    def __init__(self, logger, prefix: str):
+        self._log = logger
+        self._p = prefix
+
+    def info(self, m):  self._log.info(f"{self._p}{m}")
+    def warn(self, m):  self._log.warn(f"{self._p}{m}")
+    def error(self, m): self._log.error(f"{self._p}{m}")
+
+
+class ArmBridge:
+    """One gripper: its namespace, its shm region, its clients, its state.
+
+    This was the whole Node. It is now a plain object so ONE node can hold several,
+    which is what lets both grippers come up from a single process and act
+    independently as commands arrive for each. The per-arm logic below is unchanged;
+    only the three things that cannot be per-arm moved out -- rclpy entity creation,
+    the logger, and the timer, which the node now owns and fans out.
+    """
+
+    def __init__(self, node: Node, ns: str, shm_name: str, dry_run: bool,
+                 contact_sensitivity=None, width_speed=None):
+        self.node = node
         self.ns = ns.rstrip("/")
+        self.shm_name = shm_name
+        self._logger = _PrefixLogger(node.get_logger(), f"[{self.ns}] ")
         self._warned = {}     # srv_name -> last warn time, for the throttle in _call
         self.dry_run = dry_run
         self.contact_sensitivity = contact_sensitivity
         self.width_speed = width_speed
-        self.shm = GripperShm.create()
-        self.get_logger().info(f"created {'/dev/shm/judo_gripper'} (owner)")
+        self.shm = GripperShm.create(shm_name)
+        self.get_logger().info(f"created /dev/shm{shm_name} (owner)")
 
-        self.cli_width = self.create_client(SetTargetFingerWidth,
+        self.cli_width = node.create_client(SetTargetFingerWidth,
                                             f"{self.ns}/set_target_finger_width")
-        self.cli_pose = self.create_client(SetTargetFingerPose,
+        self.cli_pose = node.create_client(SetTargetFingerPose,
                                            f"{self.ns}/set_target_finger_pose")
-        self.cli_motor = self.create_client(MotorOn, f"{self.ns}/motor_on")
-        self.cli_force = self.create_client(SetGrippingForce,
+        self.cli_motor = node.create_client(MotorOn, f"{self.ns}/motor_on")
+        self.cli_force = node.create_client(SetGrippingForce,
                                             f"{self.ns}/set_gripping_force")
-        self.cli_sens = self.create_client(SetContactSensitivity,
+        self.cli_sens = node.create_client(SetContactSensitivity,
                                           f"{self.ns}/set_contact_sensitivity")
-        self.cli_width_spd = self.create_client(
+        self.cli_width_spd = node.create_client(
             SetTargetFingerWidthWithSpeed, f"{self.ns}/set_target_finger_width_with_speed")
-        self.create_subscription(GripperStatus, f"{self.ns}/gripper_status",
+        node.create_subscription(GripperStatus, f"{self.ns}/gripper_status",
                                  self._on_status, 10)
 
         self._last_cmd_seq = 0
@@ -105,10 +134,12 @@ class GripperBridge(Node):
         self._motor_off_warned = False
         self._fault_warned = False
         self._configured_at = None    # when motor_on/pose/force went out
-        self.create_timer(1.0 / POLL_HZ, self._poll)
-        self.get_logger().info(f"namespace {self.ns}   dry_run={dry_run}")
+        self.get_logger().info(f"namespace {self.ns}  shm {shm_name}  dry_run={dry_run}")
         if dry_run:
             self.get_logger().warn("DRY RUN: no service calls will be made")
+
+    def get_logger(self):
+        return self._logger
 
     # ---- topic -> shm ----
     def _on_status(self, msg: GripperStatus) -> None:
@@ -190,7 +221,7 @@ class GripperBridge(Node):
                 self.get_logger().warn("configuration incomplete -- will retry on the "
                                        "next command. Is the gripper driver up?")
 
-    def _poll(self) -> None:
+    def poll(self) -> None:
         try:
             cmd = self.shm.read_cmd()
         except GripperShmError as e:
@@ -295,20 +326,63 @@ class GripperBridge(Node):
                 req.finger_width = width
                 self._call(self.cli_width, req, f"finger_width({width}) [{tag}]")
 
-    def destroy_node(self):
+    def shutdown(self) -> None:
         try:
             self.shm.close()
             self.shm.unlink()
-            self.get_logger().info("unlinked /dev/shm/judo_gripper")
-        finally:
-            return super().destroy_node()
+            self.get_logger().info(f"unlinked /dev/shm{self.shm_name}")
+        except Exception as e:                       # teardown must not mask others
+            self.get_logger().warn(f"shm teardown: {e}")
+
+
+class GripperBridge(Node):
+    """One node, one timer, N grippers.
+
+    Chosen over N processes so that "both grippers up" is a single command. The cost
+    is shared fate: one EtherCAT stall blocks the other arm's poll too, because the
+    service calls are call_async and never awaited but read_cmd() is not.
+    """
+
+    def __init__(self, specs, dry_run: bool, contact_sensitivity=None,
+                 width_speed=None):
+        super().__init__("judo_gripper_bridge")
+        self.arms = [
+            ArmBridge(self, ns, shm, dry_run, contact_sensitivity, width_speed)
+            for ns, shm in specs
+        ]
+        # ONE timer for all arms: each poll() only touches its own shm and its own
+        # clients, so they stay independent -- a command arriving for one arm moves
+        # that arm and nothing else.
+        self.create_timer(1.0 / POLL_HZ, self._tick)
+        self.get_logger().info(
+            f"{len(self.arms)} gripper(s): "
+            + ", ".join(f"{a.ns} -> {a.shm_name}" for a in self.arms))
+
+    def _tick(self) -> None:
+        for a in self.arms:
+            a.poll()
+
+    def destroy_node(self):
+        for a in self.arms:
+            a.shutdown()
+        return super().destroy_node()
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--ns", default="/ag_left",
-                   help="gripper namespace (default /ag_left; the arm at 172.16.0.3)")
+    p.add_argument("--ns", action="append", default=None, metavar="NS",
+                   help="gripper namespace. Repeat it for both grippers:\n"
+                        "  --ns /ag_left --ns /ag_right\n"
+                        "Default /ag_left. The launch file picks which one exists --\n"
+                        "check with `ros2 service list | grep ag_` before assuming.")
+    p.add_argument("--shm", action="append", default=None, metavar="NAME",
+                   help="shm region per --ns, same order. Omit and it is derived:\n"
+                        "  one  --ns  -> /judo_gripper        (unchanged, single-arm)\n"
+                        "  many --ns  -> /judo_gripper_<suffix>, e.g. /judo_gripper_left\n"
+                        "One region per gripper is required, not a style choice: a\n"
+                        "region carries ONE cmd_seq/ack_seq handshake and two arms\n"
+                        "sharing it would overwrite each other's commands.")
     p.add_argument("--dry-run", action="store_true",
                    help="log what would be sent but call no services (gripper stays put)")
     p.add_argument("--contact-sensitivity", type=int, default=None, metavar="1..100",
@@ -323,9 +397,28 @@ def main() -> int:
                         "use the plain set_target_finger_width service.")
     args, ros_args = p.parse_known_args()
 
+    nss = args.ns if args.ns else ["/ag_left"]
+    nss = [n.rstrip("/") for n in nss]
+    if len(set(nss)) != len(nss):
+        p.error(f"--ns repeated with the same namespace: {nss}")
+
+    if args.shm:
+        if len(args.shm) != len(nss):
+            p.error(f"got {len(nss)} --ns and {len(args.shm)} --shm; "
+                    f"pass one --shm per --ns, in the same order")
+        shms = args.shm
+    elif len(nss) == 1:
+        shms = [SHM_NAME]                      # single arm: unchanged default
+    else:
+        # /ag_left -> /judo_gripper_left. Derived from the namespace so the pairing is
+        # visible in `ls /dev/shm` and cannot be mismatched by argument order.
+        shms = [f"{SHM_NAME}_{n.rsplit('/', 1)[-1].removeprefix('ag_')}" for n in nss]
+    if len(set(shms)) != len(shms):
+        p.error(f"--shm names must differ, got {shms}")
+
     rclpy.init(args=ros_args)
-    node = GripperBridge(args.ns, args.dry_run, args.contact_sensitivity,
-                         args.width_speed)
+    node = GripperBridge(list(zip(nss, shms)), args.dry_run,
+                         args.contact_sensitivity, args.width_speed)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

@@ -49,8 +49,15 @@ struct JudoGripper {
 static_assert(sizeof(JudoGripper) == 40, "must match gripper_shm.py's 10i layout");
 
 // The bridge NODE owns the region, so a null return just means it is not running.
-inline JudoGripper* mjpc_gripper_open() {
-  int fd = shm_open(MJPC_GRIPPER_SHM_NAME, O_RDWR, 0666);
+// name == nullptr -> MJPC_GRIPPER_SHM_NAME, which is what a single-gripper task
+// wants and keeps every existing call site unchanged. Two grippers need one region
+// each -- a region carries ONE cmd_seq/ack_seq handshake, so sharing it would have
+// the two arms overwrite each other's commands -- so a dual task passes
+// "/judo_gripper_left" and "/judo_gripper_right", matching the --shm names
+// gripper_bridge_node.py derives from its namespaces.
+inline JudoGripper* mjpc_gripper_open(const char* name = nullptr) {
+  if (!name || !name[0]) name = MJPC_GRIPPER_SHM_NAME;
+  int fd = shm_open(name, O_RDWR, 0666);
   if (fd < 0) return nullptr;
   void* p = mmap(nullptr, sizeof(JudoGripper), PROT_READ | PROT_WRITE, MAP_SHARED,
                  fd, 0);

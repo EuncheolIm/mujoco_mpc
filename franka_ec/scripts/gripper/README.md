@@ -73,9 +73,14 @@ ros2 service call /ag_right/motor_on \
 # SYSTEM python3 -- it needs rclpy, which the judo venv does not have.
 source /opt/ros/humble/setup.bash
 source ~/gripper_ws/install/setup.bash
-
 cd <repo root>
+
+# one gripper
 python3 franka_ec/scripts/gripper/gripper_bridge_node.py --ns /ag_right
+
+# BOTH grippers, one process: repeat --ns
+python3 franka_ec/scripts/gripper/gripper_bridge_node.py \
+    --ns /ag_left --ns /ag_right
 ```
 
 It owns `/judo_gripper` (creates it, unlinks it on exit), so **start it before the
@@ -105,6 +110,38 @@ Only a task that carries the gripper-shm block reacts to these (see "Not include
 `--ns` defaults to `/ag_left`. If the driver came up as `right`, only `/ag_right/*`
 exists and every call logs "service not ready" — the warning is rate-limited to one
 line per service per 2 s and names the namespace it tried.
+
+### Both grippers
+
+Repeat `--ns`. One process, one 50 Hz timer, one `ArmBridge` per gripper; each holds
+its own service clients, its own shm region and its own state, so a command arriving
+for one arm moves that arm only. Log lines are prefixed `[/ag_left]` / `[/ag_right]`
+— without that, "motor is OFF" would not say which gripper.
+
+**One shm region per gripper.** A region carries a single `cmd_seq`/`ack_seq`
+handshake, so two arms sharing it would overwrite each other's commands. The names are
+derived from the namespaces unless `--shm` overrides them:
+
+| `--ns` | region |
+|---|---|
+| one, e.g. `/ag_right` | `/judo_gripper` — unchanged, so the single-arm path is untouched |
+| `/ag_left` `/ag_right` | `/judo_gripper_left`, `/judo_gripper_right` |
+
+```bash
+--ns /ag_left --ns /ag_right --shm /a --shm /b     # explicit, same order
+ls /dev/shm | grep judo                            # verify what actually exists
+```
+
+Duplicate namespaces, duplicate region names, and a `--shm` count that does not match
+`--ns` are all rejected before rclpy starts.
+
+The mjpc side matches with `mjpc_gripper_open("/judo_gripper_left")`; the argument
+defaults to `/judo_gripper`, so existing single-gripper tasks need no edit.
+
+**Shared fate, by construction.** One process means one EtherCAT stall blocks the
+other arm's poll too: the service calls are `call_async` and never awaited, but
+`read_cmd()` is not. Two processes (`--ns` once each, distinct `--shm`) trade the
+single-command convenience for independent failure.
 
 > The example in `CMD.md` launches `gripper_ecat_left.launch.py` and then calls
 > `/ag_right/motor_on`. That pair cannot work: the left launch publishes `/ag_left/*`

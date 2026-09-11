@@ -36,8 +36,17 @@ import os
 import struct
 import time
 
+# DEFAULT region name. One gripper -> this name and nothing to configure. Two
+# grippers -> one region each, passed in explicitly, because a single region cannot
+# carry two independent cmd_seq/ack_seq handshakes.
 SHM_NAME = "/judo_gripper"
-SHM_PATH = f"/dev/shm{SHM_NAME}"
+
+
+def shm_path(name: str = SHM_NAME) -> str:
+    return f"/dev/shm{name}"
+
+
+SHM_PATH = shm_path()   # kept for callers that only ever use the default
 STRUCT_SIZE = 40
 FMT = "10i"
 
@@ -92,44 +101,50 @@ class GripperShmError(RuntimeError):
 
 
 class GripperShm:
-    def __init__(self, mm: mmap.mmap, fd: int) -> None:
+    def __init__(self, mm: mmap.mmap, fd: int, name: str = SHM_NAME) -> None:
         self._mm = mm
         self._fd = fd
+        self.name = name          # so errors and the unlink log name the right region
         self.torn_reads = 0
 
     # ---- lifecycle ----
     @classmethod
-    def create(cls) -> "GripperShm":
+    def create(cls, name: str = SHM_NAME) -> "GripperShm":
         """Owner (gripper_bridge_node.py): create + zero the region."""
-        fd = os.open(SHM_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+        fd = os.open(shm_path(name), os.O_CREAT | os.O_RDWR, 0o666)
         os.ftruncate(fd, STRUCT_SIZE)
         mm = mmap.mmap(fd, STRUCT_SIZE)
         mm.seek(0)
         mm.write(b"\x00" * STRUCT_SIZE)
-        return cls(mm, fd)
+        return cls(mm, fd, name)
 
     @classmethod
-    def open_existing(cls, timeout: float | None = 0.0) -> "GripperShm":
+    def open_existing(cls, name: str = SHM_NAME,
+                      timeout: float | None = 0.0) -> "GripperShm":
         """Attach to the node's region. timeout=0 fails immediately, None waits."""
+        path = shm_path(name)
         t0 = time.time()
-        while not os.path.exists(SHM_PATH):
+        while not os.path.exists(path):
             if timeout is not None and time.time() - t0 >= timeout:
                 raise GripperShmError(
-                    f"{SHM_NAME} not found. Start the gripper bridge first:\n"
+                    f"{name} not found. Start the gripper bridge first:\n"
                     f"  source /opt/ros/humble/setup.bash && "
                     f"source ~/gripper_ws/install/setup.bash\n"
-                    f"  python3 ours/gripper_bridge_node.py")
+                    f"  python3 franka_ec/scripts/gripper/gripper_bridge_node.py")
             time.sleep(0.05)
-        fd = os.open(SHM_PATH, os.O_RDWR)
-        return cls(mmap.mmap(fd, STRUCT_SIZE), fd)
+        fd = os.open(path, os.O_RDWR)
+        return cls(mmap.mmap(fd, STRUCT_SIZE), fd, name)
 
     def close(self) -> None:
         self._mm.close()
         os.close(self._fd)
 
     def unlink(self) -> None:
+        # THIS instance's region, not the module default. With two grippers each node
+        # owns its own region, and unlinking the global name would delete the other
+        # arm's while leaving this one behind.
         try:
-            os.unlink(SHM_PATH)
+            os.unlink(shm_path(self.name))
         except FileNotFoundError:
             pass
 
